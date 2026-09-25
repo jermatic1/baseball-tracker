@@ -1,0 +1,54 @@
+version: "3"
+
+vars:
+  SESSION: '{{.SESSION | default "test-1"}}'
+
+tasks:
+  build:
+    desc: Build the tracker
+    cmds:
+      - cargo build -p cli
+
+  build-oak:
+    desc: Build capture with the OAK camera
+    cmds:
+      - cargo build -p cli --features oak
+
+  test:
+    desc: Run tracker tests
+    cmds:
+      - cargo test -p tracker
+
+  synth:
+    desc: Write a synthetic session
+    cmds:
+      - cargo run -p cli --quiet -- synth sessions/{{.SESSION}}
+
+  capture:
+    desc: Live capture server
+    cmds:
+      - cargo run -p cli --features oak --quiet -- capture sessions/{{.SESSION}}
+
+  review:
+    desc: Review a session
+    cmds:
+      - cargo run -p cli --quiet -- review sessions/{{.SESSION}}
+
+  detect:
+    desc: Detect balls in a saved session
+    cmds:
+      - cargo run -p cli --features detect --quiet -- detect sessions/{{.SESSION}}
+
+  camera:
+    desc: Open the OAK and write one frame
+    cmds:
+      - cargo run -p cli --features oak --quiet -- capture sessions/{{.SESSION}} --once
+
+  release:
+    desc: Release build for this machine
+    cmds:
+      - cargo build -p cli --release --features oak
+      - mkdir -p dist/release
+      - rm -rf dist/release/tracker dist/release/*.so dist/release/*.so.*
+      - cp target/release/tracker dist/release/tracker
+      - cp -a target/release/libavcodec.so* target/release/libavformat.so* target/release/libavutil.so* target/release/libavfilter.so* target/release/libavdevice.so* target/release/libswscale.so* target/release/libswresample.so* target/release/libusb-1.0.so* target/release/libdynamic_calibration.so* dist/release/

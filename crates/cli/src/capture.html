@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>capture</title>
+<style>
+body { font: 14px sans-serif; background: #111; color: #eee; margin: 16px; }
+img { background: #000; max-width: 100%; }
+button { margin: 4px 4px 0 0; padding: 6px 10px; }
+.row { margin-top: 12px; }
+#status { margin-top: 8px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<h1>Capture</h1>
+<p>Manual exposure. Auto-exposure is off.</p>
+<img id="preview" alt="live preview" width="640">
+<div class="row">
+  <button data-act="exposure" data-delta="-100">Exposure −100 µs</button>
+  <button data-act="exposure" data-delta="100">Exposure +100 µs</button>
+  <button data-act="gain" data-delta="-10">Gain −10</button>
+  <button data-act="gain" data-delta="10">Gain +10</button>
+</div>
+<div class="row">
+  <button data-fps="30">30 fps</button>
+  <button data-fps="60">60 fps</button>
+  <button data-fps="120">120 fps</button>
+  <button id="save">Save clip</button>
+</div>
+<div id="status"></div>
+<script>
+const img = document.getElementById("preview");
+const status = document.getElementById("status");
+let url = null;
+async function tick() {
+  const r = await fetch("/preview.jpg", { cache: "no-store" });
+  if (!r.ok) {
+    status.textContent = "no frame yet";
+    return;
+  }
+  const blob = await r.blob();
+  const next = URL.createObjectURL(blob);
+  img.src = next;
+  if (url) URL.revokeObjectURL(url);
+  url = next;
+}
+setInterval(tick, 100);
+tick();
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  status.textContent = r.ok ? text : (r.status + " " + text);
+}
+document.querySelectorAll("[data-act]").forEach((b) => {
+  b.onclick = () => post("/api/" + b.dataset.act, { delta: Number(b.dataset.delta) });
+});
+document.querySelectorAll("[data-fps]").forEach((b) => {
+  b.onclick = () => post("/api/fps", { fps: Number(b.dataset.fps) });
+});
+document.getElementById("save").onclick = () => post("/api/save", {});
+</script>
+</body>
+</html>

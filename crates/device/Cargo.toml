@@ -1,0 +1,11 @@
+[package]
+name = "device"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[features]
+oak = ["dep:depthai"]
+
+[dependencies]
+depthai = { git = "https://github.com/jermatic1/depthai-rs.git", rev = "4c34ecb", optional = true }

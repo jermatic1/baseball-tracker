@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["crates/device", "crates/tracker", "crates/cli"]
+
+[workspace.package]
+license = "MIT"

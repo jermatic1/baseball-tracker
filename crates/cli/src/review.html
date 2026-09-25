@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>review</title>
+<style>
+body { font: 14px sans-serif; background: #111; color: #eee; margin: 0; display: flex; height: 100vh; }
+#clips { width: 160px; overflow: auto; border-right: 1px solid #333; padding: 8px; }
+#main { flex: 1; padding: 8px; overflow: auto; }
+canvas { background: #000; max-width: 100%; }
+button, input { margin-right: 6px; }
+.clip { display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 6px; }
+.clip.on { background: #345; color: #fff; }
+#hit { margin-top: 8px; white-space: pre; }
+</style>
+</head>
+<body>
+<nav id="clips"></nav>
+<section id="main">
+  <div>
+    <button id="play">Play</button>
+    <input id="scrub" type="range" min="0" max="0" value="0">
+    <span id="idx"></span>
+  </div>
+  <canvas id="frame"></canvas>
+  <div id="hit"></div>
+</section>
+<script>
+const clipsEl = document.getElementById("clips");
+const canvas = document.getElementById("frame");
+const ctx = canvas.getContext("2d");
+const scrub = document.getElementById("scrub");
+const idxEl = document.getElementById("idx");
+const hitEl = document.getElementById("hit");
+const playBtn = document.getElementById("play");
+let session = null;
+let clipId = null;
+let clip = null;
+let n = 0;
+let i = 0;
+let playing = false;
+let fps = 30;
+function ballsFor(index) {
+  const det = clip && clip.detections;
+  if (!det) return [];
+  const frames = det.frames || [];
+  const row = frames.find((f) => f.index === index) || frames[index];
+  return (row && row.balls) || [];
+}
+function draw(bitmap, index) {
+  const w = bitmap.width;
+  const h = bitmap.height;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(bitmap, 0, 0);
+  for (const b of ballsFor(index)) {
+    const ground = (b.y + b.h) > h * 0.8;
+    ctx.strokeStyle = ground ? "#8cf" : "#0f0";
+    ctx.lineWidth = ground ? 1 : 2;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    const depth = b.depth_m == null ? "" : (" " + Number(b.depth_m).toFixed(2) + "m");
+    ctx.fillStyle = "#fff";
+    ctx.fillText(((b.conf || 0).toFixed(2)) + depth, b.x, Math.max(12, b.y - 2));
+  }
+}
+async function show(index) {
+  if (!clipId || n === 0) return;
+  i = Math.max(0, Math.min(n - 1, index));
+  scrub.value = String(i);
+  idxEl.textContent = i + " / " + (n - 1);
+  const r = await fetch("/api/clips/" + clipId + "/frame/" + i, { cache: "no-store" });
+  if (!r.ok) return;
+  const blob = await r.blob();
+  const bmp = await createImageBitmap(blob);
+  draw(bmp, i);
+  bmp.close();
+}
+function renderHit() {
+  const h = clip && clip.hit;
+  if (!h) { hitEl.textContent = "no hit"; return; }
+  hitEl.textContent =
+    "exit velocity: " + h.exit_velocity_mph + " mph\n" +
+    "launch angle: " + h.launch_angle_deg + " deg\n" +
+    "spray: " + h.spray_angle_deg + " deg\n" +
+    "samples: " + h.samples + "\n" +
+    "confident: " + h.confident + "\n" +
+    "posted: " + h.posted;
+}
+async function selectClip(id) {
+  playing = false;
+  clipId = id;
+  clip = await (await fetch("/api/clips/" + id)).json();
+  n = (clip.meta && clip.meta.frames) || 0;
+  scrub.max = String(Math.max(0, n - 1));
+  [...clipsEl.children].forEach((b) => b.classList.toggle("on", b.dataset.id === id));
+  renderHit();
+  await show(0);
+}
+async function boot() {
+  session = await (await fetch("/api/session")).json();
+  fps = (session.config && session.config.capture && session.config.capture.fps) || 30;
+  for (const id of session.clips || []) {
+    const b = document.createElement("button");
+    b.className = "clip";
+    b.dataset.id = id;
+    b.textContent = id;
+    b.onclick = () => selectClip(id);
+    clipsEl.appendChild(b);
+  }
+  if ((session.clips || []).length) await selectClip(session.clips[0]);
+}
+scrub.oninput = () => show(Number(scrub.value));
+playBtn.onclick = async () => {
+  playing = !playing;
+  playBtn.textContent = playing ? "Pause" : "Play";
+  while (playing) {
+    if (i >= n - 1) { playing = false; playBtn.textContent = "Play"; break; }
+    await show(i + 1);
+    await new Promise((r) => setTimeout(r, 1000 / fps));
+  }
+};
+boot();
+</script>
+</body>
+</html>
