@@ -17,7 +17,25 @@ tasks:
   test:
     desc: Run tracker tests
     cmds:
-      - cargo test -p tracker
+      - cargo test --workspace
+
+  fmt:
+    desc: Check formatting
+    cmds:
+      - cargo fmt --all -- --check
+
+  lint:
+    desc: Clippy with warnings denied
+    cmds:
+      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo clippy --workspace --all-targets --features oak -- -D warnings
+
+  check:
+    desc: Format, lint, and test
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test
 
   synth:
     desc: Write a synthetic session
@@ -47,6 +65,7 @@ tasks:
   release:
     desc: Release build for this machine
     cmds:
+      - task: check
       - cargo build -p cli --release --features oak
       - mkdir -p dist/release
       - rm -rf dist/release/tracker dist/release/*.so dist/release/*.so.*

@@ -7,7 +7,9 @@ pub mod track;
 pub use config::{CaptureConfig, MountConfig, SessionConfig, SimulatorConfig};
 pub use geom::{fit_samples, HitEstimate, Intrinsics, Sample};
 pub use launch::postable;
-pub use session::{write_synth, Clip, ClipMeta, Detections, HitRecord, Session, StoredFrame};
+pub use session::{
+    write_synth, Clip, ClipMeta, ClipWriter, Detections, HitRecord, Session, StoredFrame,
+};
 pub use track::{select_hit, BallBox, DetFrame, Track};
 
 use geom::unproject;
@@ -274,8 +276,8 @@ mod tests {
         session.write_hits(&hits).unwrap();
         let opened = Session::open(&dir).unwrap();
         let h2 = opened.hits().unwrap();
-        assert_eq!(h2[0].posted, true);
-        assert_eq!(opened.config.mount.positive_depth_is_rf, true);
+        assert!(h2[0].posted);
+        assert!(opened.config.mount.positive_depth_is_rf);
         std::fs::remove_dir_all(&dir).ok();
     }
 

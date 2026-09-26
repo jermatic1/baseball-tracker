@@ -25,7 +25,11 @@ pub async fn detect(path: PathBuf, model: String) -> Result<(), String> {
                     let xyxy = boxes.xyxy();
                     for b in 0..boxes.len() {
                         let class_id = boxes.cls()[b] as usize;
-                        let name = result.names.get(&class_id).map(String::as_str).unwrap_or("");
+                        let name = result
+                            .names
+                            .get(&class_id)
+                            .map(String::as_str)
+                            .unwrap_or("");
                         if class_id != 32 && name != "sports ball" {
                             continue;
                         }

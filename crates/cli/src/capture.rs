@@ -75,7 +75,10 @@ fn capture_once(path: PathBuf) -> Result<(), String> {
     )?;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
-        if let Some(frame) = cam.poll(Duration::from_millis(0)).map_err(|e| e.to_string())? {
+        if let Some(frame) = cam
+            .poll(Duration::from_millis(0))
+            .map_err(|e| e.to_string())?
+        {
             let jpeg = crate::jpeg::encode_gray_jpeg(frame.width, frame.height, &frame.left)?;
             let out = session.dir.join("camera.jpg");
             std::fs::write(&out, jpeg).map_err(|e| e.to_string())?;
@@ -96,13 +99,13 @@ async fn capture_oak(path: PathBuf) -> Result<(), String> {
     let exposure_us = session.config.capture.exposure_us;
     let gain = session.config.capture.gain;
     let cam = device::OakCamera::open(width, height, fps.max(1.0), exposure_us, gain)?;
-    server::run(session, cam, fps.max(1.0), exposure_us, gain).await
+    server::run(session, cam, exposure_us, gain).await
 }
 
 #[cfg(feature = "oak")]
 mod server {
-    use std::collections::VecDeque;
     use std::net::SocketAddr;
+    use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -121,31 +124,29 @@ mod server {
     const BIND: &str = "127.0.0.1:7880";
 
     struct CaptureState {
-        ring: VecDeque<tracker::StoredFrame>,
-        ring_cap: usize,
+        latest: Option<Arc<tracker::StoredFrame>>,
         jpeg: Option<(Instant, Vec<u8>)>,
         exposure_us: u32,
         gain: u32,
-        fps: f32,
         session: tracker::Session,
+        record_tx: Option<SyncSender<Option<Arc<tracker::StoredFrame>>>>,
+        record_done: Option<Receiver<Result<String, String>>>,
     }
 
     pub async fn run(
         session: tracker::Session,
         cam: device::OakCamera,
-        fps: f32,
         exposure_us: u32,
         gain: u32,
     ) -> Result<(), String> {
-        let ring_cap = (fps * 2.0).round().max(1.0) as usize;
         let state = Arc::new(Mutex::new(CaptureState {
-            ring: VecDeque::with_capacity(ring_cap),
-            ring_cap,
+            latest: None,
             jpeg: None,
             exposure_us,
             gain,
-            fps,
             session,
+            record_tx: None,
+            record_done: None,
         }));
         let poll_state = Arc::clone(&state);
         std::thread::spawn(move || poll_loop(cam, poll_state));
@@ -155,7 +156,8 @@ mod server {
             .route("/api/exposure", post(set_exposure))
             .route("/api/gain", post(set_gain))
             .route("/api/fps", post(set_fps))
-            .route("/api/save", post(save))
+            .route("/api/record", post(record))
+            .route("/api/stop", post(stop))
             .with_state(state);
         let addr: SocketAddr = BIND
             .parse()
@@ -169,22 +171,38 @@ mod server {
 
     fn poll_loop(mut cam: device::OakCamera, state: Arc<Mutex<CaptureState>>) {
         loop {
+            let (exposure_us, gain) = {
+                let st = match state.lock() {
+                    Ok(g) => g,
+                    Err(_) => break,
+                };
+                (st.exposure_us, st.gain)
+            };
+            if let Err(e) = cam.apply_controls(exposure_us, gain) {
+                eprintln!("{e}");
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
             match cam.poll(Duration::from_millis(0)) {
                 Ok(Some(frame)) => {
+                    let stored = Arc::new(to_stored(frame));
                     let mut st = match state.lock() {
                         Ok(g) => g,
                         Err(_) => break,
                     };
-                    let stored = to_stored(frame);
-                    let cap = st.ring_cap.max(1);
-                    st.ring.push_back(stored);
-                    while st.ring.len() > cap {
-                        st.ring.pop_front();
+                    let tx = st.record_tx.clone();
+                    st.latest = Some(Arc::clone(&stored));
+                    drop(st);
+                    if let Some(tx) = tx {
+                        let _ = tx.send(Some(stored));
                     }
                 }
-                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+                Ok(None) => std::thread::sleep(Duration::from_millis(1)),
                 Err(e) => {
                     eprintln!("{e}");
+                    if e.starts_with("frame size") {
+                        break;
+                    }
                     std::thread::sleep(Duration::from_millis(100));
                 }
             }
@@ -196,17 +214,28 @@ mod server {
     }
 
     async fn preview(State(state): State<Arc<Mutex<CaptureState>>>) -> Result<Response, AppError> {
-        let mut st = state.lock().map_err(|e| e.to_string())?;
-        if let Some((t, bytes)) = &st.jpeg {
-            if t.elapsed() < Duration::from_millis(100) {
-                return Ok(jpeg_response(bytes.clone()));
-            }
+        let cached = {
+            let st = state.lock().map_err(|e| e.to_string())?;
+            st.jpeg.as_ref().and_then(|(t, bytes)| {
+                (t.elapsed() < Duration::from_millis(100)).then(|| bytes.clone())
+            })
+        };
+        if let Some(bytes) = cached {
+            return Ok(jpeg_response(bytes));
         }
-        let Some(frame) = st.ring.back() else {
+        let frame = {
+            let st = state.lock().map_err(|e| e.to_string())?;
+            st.latest
+                .as_ref()
+                .map(|frame| (frame.width, frame.height, Arc::clone(frame)))
+        };
+        let Some((width, height, frame)) = frame else {
             return Ok(StatusCode::NOT_FOUND.into_response());
         };
-        let bytes = encode_gray_jpeg(frame.width, frame.height, &frame.left)?;
-        st.jpeg = Some((Instant::now(), bytes.clone()));
+        let bytes = encode_gray_jpeg(width, height, &frame.left)?;
+        if let Ok(mut st) = state.lock() {
+            st.jpeg = Some((Instant::now(), bytes.clone()));
+        }
         Ok(jpeg_response(bytes))
     }
 
@@ -246,7 +275,7 @@ mod server {
         Json(body): Json<DeltaBody>,
     ) -> Result<Json<serde_json::Value>, AppError> {
         let mut st = state.lock().map_err(|e| e.to_string())?;
-        let next = (st.gain as i64 + body.delta as i64).clamp(0, 100_000) as u32;
+        let next = (st.gain as i64 + body.delta as i64).clamp(100, 1600) as u32;
         st.gain = next;
         Ok(Json(serde_json::json!({ "gain": next })))
     }
@@ -255,24 +284,61 @@ mod server {
         State(state): State<Arc<Mutex<CaptureState>>>,
         Json(body): Json<FpsBody>,
     ) -> Result<Json<serde_json::Value>, AppError> {
-        let mut st = state.lock().map_err(|e| e.to_string())?;
-        let fps = body.fps.max(1.0);
-        st.fps = fps;
-        st.ring_cap = (fps * 2.0).round().max(1.0) as usize;
-        Ok(Json(serde_json::json!({ "fps": fps })))
+        let _st = state.lock().map_err(|e| e.to_string())?;
+        let _ = body.fps.max(1.0);
+        Err("fps is fixed at open".to_string().into())
     }
 
-    async fn save(
+    async fn record(
         State(state): State<Arc<Mutex<CaptureState>>>,
     ) -> Result<Json<serde_json::Value>, AppError> {
         let mut st = state.lock().map_err(|e| e.to_string())?;
-        let frames: Vec<_> = st.ring.drain(..).collect();
-        let result = st
+        if st.record_tx.is_some() {
+            return Err("already recording".to_string().into());
+        }
+        let writer = st
             .session
-            .save_clip(&frames, st.exposure_us, st.gain)
-            .map_err(|e| e.to_string());
-        st.ring.extend(frames);
-        let id = result?;
+            .begin_clip(st.exposure_us, st.gain)
+            .map_err(|e| e.to_string())?;
+        let (tx, rx) = mpsc::sync_channel(8);
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || record_loop(writer, rx, done_tx));
+        st.record_tx = Some(tx);
+        st.record_done = Some(done_rx);
+        println!("recording");
+        Ok(Json(serde_json::json!({ "recording": true })))
+    }
+
+    async fn stop(
+        State(state): State<Arc<Mutex<CaptureState>>>,
+    ) -> Result<Json<serde_json::Value>, AppError> {
+        let done = {
+            let mut st = state.lock().map_err(|e| e.to_string())?;
+            st.record_tx.take();
+            st.record_done.take()
+        };
+        let Some(done) = done else {
+            return Err("not recording".to_string().into());
+        };
+        let id = tokio::task::spawn_blocking(move || done.recv())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|_| "recorder stopped".to_string())??;
+        println!("saved clip {id}");
         Ok(Json(serde_json::json!({ "clip": id })))
+    }
+
+    fn record_loop(
+        mut writer: tracker::ClipWriter,
+        rx: Receiver<Option<Arc<tracker::StoredFrame>>>,
+        done: mpsc::Sender<Result<String, String>>,
+    ) {
+        while let Ok(Some(frame)) = rx.recv() {
+            if let Err(e) = writer.write(&frame) {
+                let _ = done.send(Err(e.to_string()));
+                return;
+            }
+        }
+        let _ = done.send(writer.finish().map_err(|e| e.to_string()));
     }
 }

@@ -63,7 +63,11 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     match Cli::parse().command {
-        Command::Capture { session, demo, once } => capture(session, demo, once).await,
+        Command::Capture {
+            session,
+            demo,
+            once,
+        } => capture(session, demo, once).await,
         Command::Review { session, bind } => review(session, bind).await,
         Command::Live { session, replay } => live(session, replay).await,
         Command::Synth { session } => synth(session),

@@ -87,6 +87,82 @@ pub struct Session {
     pub config: SessionConfig,
 }
 
+pub struct ClipWriter {
+    id: String,
+    dir: PathBuf,
+    left: File,
+    depth: File,
+    stamps: File,
+    count: usize,
+    width: u32,
+    height: u32,
+    first_t: Option<u64>,
+    last_t: Option<u64>,
+    gaps: bool,
+    last_seq: Option<u64>,
+    exposure_us: u32,
+    gain: u32,
+    fps_fallback: f64,
+}
+
+impl ClipWriter {
+    pub fn write(&mut self, frame: &StoredFrame) -> Result<(), TrackerError> {
+        if self.count == 0 {
+            self.width = frame.width;
+            self.height = frame.height;
+            self.first_t = Some(frame.t_ns);
+        }
+        if let Some(prev) = self.last_seq {
+            if frame.sequence != prev + 1 {
+                self.gaps = true;
+            }
+        }
+        self.last_seq = Some(frame.sequence);
+        self.last_t = Some(frame.t_ns);
+        self.left.write_all(&frame.left)?;
+        write_depth(&mut self.depth, &frame.depth_mm)?;
+        self.stamps.write_all(&frame.t_ns.to_le_bytes())?;
+        self.stamps.write_all(&frame.sequence.to_le_bytes())?;
+        self.count += 1;
+        Ok(())
+    }
+
+    pub fn finish(self) -> Result<String, TrackerError> {
+        let dt = match (self.first_t, self.last_t) {
+            (Some(a), Some(b)) if self.count >= 2 && b > a => (b - a) as f64 / 1e9,
+            _ => 0.0,
+        };
+        let fps = if dt > 0.0 {
+            (self.count - 1) as f64 / dt
+        } else {
+            self.fps_fallback
+        };
+        let meta = ClipMeta {
+            width: self.width,
+            height: self.height,
+            fps,
+            frame_count: self.count,
+            exposure_us: self.exposure_us,
+            gain: self.gain,
+            sequence_gaps: self.gaps,
+        };
+        fs::write(
+            self.dir.join("meta.json"),
+            serde_json::to_vec_pretty(&meta)?,
+        )?;
+        Ok(self.id)
+    }
+}
+
+fn write_depth(out: &mut impl Write, values: &[u16]) -> Result<(), TrackerError> {
+    let mut buf = vec![0u8; values.len() * 2];
+    for (i, v) in values.iter().enumerate() {
+        buf[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+    }
+    out.write_all(&buf)?;
+    Ok(())
+}
+
 impl Session {
     pub fn create(dir: impl AsRef<Path>) -> Result<Self, TrackerError> {
         let dir = dir.as_ref().to_path_buf();
@@ -182,13 +258,44 @@ impl Session {
         let mut stamps = File::create(dir.join("stamps.bin"))?;
         for fr in frames {
             left.write_all(&fr.left)?;
-            for d in &fr.depth_mm {
-                depth.write_all(&d.to_le_bytes())?;
-            }
+            write_depth(&mut depth, &fr.depth_mm)?;
             stamps.write_all(&fr.t_ns.to_le_bytes())?;
             stamps.write_all(&fr.sequence.to_le_bytes())?;
         }
         Ok(id)
+    }
+
+    pub fn begin_clip(&self, exposure_us: u32, gain: u32) -> Result<ClipWriter, TrackerError> {
+        let next = self
+            .clip_ids()?
+            .iter()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let id = format!("{next:04}");
+        let dir = self.clip_dir(&id);
+        fs::create_dir_all(&dir)?;
+        let left = File::create(dir.join("left.gray"))?;
+        let depth = File::create(dir.join("depth.u16"))?;
+        let stamps = File::create(dir.join("stamps.bin"))?;
+        Ok(ClipWriter {
+            id,
+            dir,
+            left,
+            depth,
+            stamps,
+            count: 0,
+            width: 0,
+            height: 0,
+            first_t: None,
+            last_t: None,
+            gaps: false,
+            last_seq: None,
+            exposure_us,
+            gain,
+            fps_fallback: self.config.capture.fps,
+        })
     }
 
     pub fn load_clip(&self, id: &str) -> Result<Clip, TrackerError> {
@@ -268,7 +375,17 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
         let mut left = vec![12u8; (w * h) as usize];
         let mut depth = vec![0u16; (w * h) as usize];
         paint_disk(
-            &mut left, &mut depth, w, h, ground.0, ground.1, ground.2, 40, 3200,
+            &mut left,
+            &mut depth,
+            w,
+            h,
+            Disk {
+                cx: ground.0,
+                cy: ground.1,
+                radius: ground.2,
+                value: 40,
+                depth_mm: 3200,
+            },
         );
         let mut balls = vec![BallBox {
             x: (ground.0 - ground.2) as f64,
@@ -284,7 +401,19 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
                 let cy = v.round() as i32;
                 let r = 8i32;
                 let depth_mm = (zc * 1000.0).round().clamp(1.0, u16::MAX as f64) as u16;
-                paint_disk(&mut left, &mut depth, w, h, cx, cy, r, 220, depth_mm);
+                paint_disk(
+                    &mut left,
+                    &mut depth,
+                    w,
+                    h,
+                    Disk {
+                        cx,
+                        cy,
+                        radius: r,
+                        value: 220,
+                        depth_mm,
+                    },
+                );
                 balls.push(BallBox {
                     x: u - r as f64,
                     y: v - r as f64,
@@ -314,7 +443,7 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
     session.save_detections(&id, &dets)?;
     let rec = process_clip(&id, &dets.frames, &session.config, &intr, w, h)
         .ok_or_else(|| TrackerError::Other("synth clip did not produce a hit".into()))?;
-    session.write_hits(&[rec.clone()])?;
+    session.write_hits(std::slice::from_ref(&rec))?;
     Ok(HitEstimate {
         exit_velocity_mph: rec.exit_velocity_mph,
         launch_angle_deg: rec.launch_angle_deg,
@@ -324,32 +453,30 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
     })
 }
 
-fn paint_disk(
-    left: &mut [u8],
-    depth: &mut [u16],
-    width: u32,
-    height: u32,
+struct Disk {
     cx: i32,
     cy: i32,
     radius: i32,
     value: u8,
     depth_mm: u16,
-) {
+}
+
+fn paint_disk(left: &mut [u8], depth: &mut [u16], width: u32, height: u32, disk: Disk) {
     let w = width as i32;
     let h = height as i32;
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            if dx * dx + dy * dy > radius * radius {
+    for dy in -disk.radius..=disk.radius {
+        for dx in -disk.radius..=disk.radius {
+            if dx * dx + dy * dy > disk.radius * disk.radius {
                 continue;
             }
-            let x = cx + dx;
-            let y = cy + dy;
+            let x = disk.cx + dx;
+            let y = disk.cy + dy;
             if x < 0 || y < 0 || x >= w || y >= h {
                 continue;
             }
             let i = (y as u32 * width + x as u32) as usize;
-            left[i] = value;
-            depth[i] = depth_mm;
+            left[i] = disk.value;
+            depth[i] = disk.depth_mm;
         }
     }
 }

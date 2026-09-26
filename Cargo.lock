@@ -877,7 +877,7 @@ dependencies = [
 [[package]]
 name = "depthai"
 version = "0.1.3"
-source = "git+https://github.com/jermatic1/depthai-rs.git?rev=4c34ecb#4c34ecb08fdf3c59e40b166041a0f0c24863b914"
+source = "git+https://github.com/jermatic1/depthai-rs.git?rev=3df7754#3df7754fa3f5b49113d46877f402007c46643146"
 dependencies = [
  "autocxx",
  "depthai-macros",
@@ -893,7 +893,7 @@ dependencies = [
 [[package]]
 name = "depthai-macros"
 version = "0.1.3"
-source = "git+https://github.com/jermatic1/depthai-rs.git?rev=4c34ecb#4c34ecb08fdf3c59e40b166041a0f0c24863b914"
+source = "git+https://github.com/jermatic1/depthai-rs.git?rev=3df7754#3df7754fa3f5b49113d46877f402007c46643146"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -903,7 +903,7 @@ dependencies = [
 [[package]]
 name = "depthai-sys"
 version = "0.1.3"
-source = "git+https://github.com/jermatic1/depthai-rs.git?rev=4c34ecb#4c34ecb08fdf3c59e40b166041a0f0c24863b914"
+source = "git+https://github.com/jermatic1/depthai-rs.git?rev=3df7754#3df7754fa3f5b49113d46877f402007c46643146"
 dependencies = [
  "autocxx",
  "autocxx-build",

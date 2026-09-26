@@ -28,9 +28,17 @@ pub struct Track {
     pub points: Vec<(usize, BallBox)>,
 }
 
+struct Obs {
+    index: usize,
+    ball: BallBox,
+    t_ns: u64,
+    cx: f64,
+    cy: f64,
+}
+
 pub fn select_hit(frames: &[DetFrame], width: u32, height: u32) -> Option<Track> {
     let _ = width;
-    let mut tracks: Vec<Vec<(usize, BallBox, u64, f64, f64)>> = Vec::new();
+    let mut tracks: Vec<Vec<Obs>> = Vec::new();
     for fr in frames {
         let mut used_track = vec![false; tracks.len()];
         let mut used_ball = vec![false; fr.balls.len()];
@@ -39,7 +47,7 @@ pub fn select_hit(frames: &[DetFrame], width: u32, height: u32) -> Option<Track>
             let (cx, cy) = b.centroid();
             for (ti, tr) in tracks.iter().enumerate() {
                 let last = tr.last().unwrap();
-                let d = (cx - last.3).hypot(cy - last.4);
+                let d = (cx - last.cx).hypot(cy - last.cy);
                 if d <= 300.0 {
                     pairs.push((ti, bi, d));
                 }
@@ -54,14 +62,26 @@ pub fn select_hit(frames: &[DetFrame], width: u32, height: u32) -> Option<Track>
             used_ball[bi] = true;
             let b = fr.balls[bi];
             let (cx, cy) = b.centroid();
-            tracks[ti].push((fr.index, b, fr.t_ns, cx, cy));
+            tracks[ti].push(Obs {
+                index: fr.index,
+                ball: b,
+                t_ns: fr.t_ns,
+                cx,
+                cy,
+            });
         }
         for (bi, b) in fr.balls.iter().enumerate() {
             if used_ball[bi] {
                 continue;
             }
             let (cx, cy) = b.centroid();
-            tracks.push(vec![(fr.index, *b, fr.t_ns, cx, cy)]);
+            tracks.push(vec![Obs {
+                index: fr.index,
+                ball: *b,
+                t_ns: fr.t_ns,
+                cx,
+                cy,
+            }]);
         }
     }
 
@@ -73,14 +93,14 @@ pub fn select_hit(frames: &[DetFrame], width: u32, height: u32) -> Option<Track>
         }
         let first = &tr[0];
         let last = tr.last().unwrap();
-        let dx = last.3 - first.3;
-        let dy = last.4 - first.4;
-        let dt = (last.2 as f64 - first.2 as f64) / 1e9;
+        let dx = last.cx - first.cx;
+        let dy = last.cy - first.cy;
+        let dt = (last.t_ns as f64 - first.t_ns as f64) / 1e9;
         if dt <= 0.0 {
             continue;
         }
         let speed = dx.hypot(dy) / dt;
-        let mut ys: Vec<f64> = tr.iter().map(|p| p.4).collect();
+        let mut ys: Vec<f64> = tr.iter().map(|p| p.cy).collect();
         ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let med_y = ys[ys.len() / 2];
         if med_y > 0.65 * h && speed < 300.0 {
@@ -90,7 +110,7 @@ pub fn select_hit(frames: &[DetFrame], width: u32, height: u32) -> Option<Track>
             continue;
         }
         let track = Track {
-            points: tr.iter().map(|p| (p.0, p.1)).collect(),
+            points: tr.iter().map(|p| (p.index, p.ball)).collect(),
         };
         if best.as_ref().map(|(s, _)| speed > *s).unwrap_or(true) {
             best = Some((speed, track));

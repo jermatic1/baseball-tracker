@@ -95,18 +95,32 @@ impl Camera for SyntheticCamera {
         let t = self.sequence as f64 / self.fps as f64;
         let cx = (self.width as f64 * 0.35 + t * 180.0) as i32;
         let cy = (self.height as f64 * 0.55 - t * 90.0) as i32;
-        paint_disk(&mut left, &mut depth, self.width, self.height, cx, cy, 8, 40, 2100);
+        paint_disk(
+            &mut left,
+            &mut depth,
+            self.width,
+            self.height,
+            Disk {
+                cx,
+                cy,
+                radius: 8,
+                value: 40,
+                depth_mm: 2100,
+            },
+        );
         let ground_x = 100 + (self.sequence % 5) as i32;
         paint_disk(
             &mut left,
             &mut depth,
             self.width,
             self.height,
-            ground_x,
-            self.height as i32 - 30,
-            6,
-            30,
-            2500,
+            Disk {
+                cx: ground_x,
+                cy: self.height as i32 - 30,
+                radius: 6,
+                value: 30,
+                depth_mm: 2500,
+            },
         );
         let frame = Frame {
             width: self.width,
@@ -123,35 +137,36 @@ impl Camera for SyntheticCamera {
     }
 }
 
-fn paint_disk(
-    left: &mut [u8],
-    depth: &mut [u16],
-    width: u32,
-    height: u32,
+struct Disk {
     cx: i32,
     cy: i32,
     radius: i32,
     value: u8,
     depth_mm: u16,
-) {
+}
+
+fn paint_disk(left: &mut [u8], depth: &mut [u16], width: u32, height: u32, disk: Disk) {
     let w = width as i32;
     let h = height as i32;
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            if dx * dx + dy * dy > radius * radius {
+    for dy in -disk.radius..=disk.radius {
+        for dx in -disk.radius..=disk.radius {
+            if dx * dx + dy * dy > disk.radius * disk.radius {
                 continue;
             }
-            let x = cx + dx;
-            let y = cy + dy;
+            let x = disk.cx + dx;
+            let y = disk.cy + dy;
             if x < 0 || y < 0 || x >= w || y >= h {
                 continue;
             }
             let i = (y as u32 * width + x as u32) as usize;
-            left[i] = value;
-            depth[i] = depth_mm;
+            left[i] = disk.value;
+            depth[i] = disk.depth_mm;
         }
     }
 }
+
+#[cfg(any(test, feature = "oak"))]
+mod pair;
 
 #[cfg(feature = "oak")]
 mod oak;
