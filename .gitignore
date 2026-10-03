@@ -1,5 +1,8 @@
 /target
+/.venv
 /dist
 /sessions
+/models
 **/*.rs.bk
 .DS_Store
+/yolo*.onnx

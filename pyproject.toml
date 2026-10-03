@@ -1,0 +1,15 @@
+# task train installs these with `uv pip install --torch-backend=auto`.
+# Do not uv lock. The default Linux torch wheel is CUDA.
+
+[project]
+name = "tracker-train"
+version = "0.1.0"
+description = "Fine-tune the ball detector and export ONNX"
+requires-python = ">=3.11"
+dependencies = [
+    "pillow>=10",
+    "ultralytics>=8.4",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>label</title>
+<style>
+body { font: 14px sans-serif; background: #111; color: #eee; margin: 0; display: flex; height: 100vh; }
+#clips { width: 140px; overflow: auto; border-right: 1px solid #333; padding: 8px; }
+#main { flex: 1; padding: 8px; overflow: auto; }
+canvas { background: #000; max-width: 100%; cursor: crosshair; }
+button, input { margin-right: 6px; }
+.clip { display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 6px; }
+.clip.on { background: #345; color: #fff; }
+#zoom { position: fixed; right: 12px; top: 12px; border: 1px solid #444; background: #000; }
+#status { margin-top: 8px; }
+</style>
+</head>
+<body>
+<nav id="clips"></nav>
+<section id="main">
+  <div>
+    <button id="prev">←</button>
+    <button id="next">→</button>
+    <input id="scrub" type="range" min="0" max="0" value="0">
+    <span id="idx"></span>
+    <label>box <input id="box" type="number" min="8" max="80" value="32"></label>
+    <label>step <input id="step" type="number" min="1" max="8" value="2"></label>
+  </div>
+  <canvas id="frame"></canvas>
+  <canvas id="zoom" width="180" height="180"></canvas>
+  <p>Click the ball. A gap of up to 12 frames is filled in a straight line. n = no ball. u = undo this frame.</p>
+  <div id="status"></div>
+</section>
+<script>
+const clipsEl = document.getElementById("clips");
+const canvas = document.getElementById("frame");
+const ctx = canvas.getContext("2d");
+const zoom = document.getElementById("zoom");
+const zctx = zoom.getContext("2d");
+const scrub = document.getElementById("scrub");
+const idxEl = document.getElementById("idx");
+const statusEl = document.getElementById("status");
+const boxEl = document.getElementById("box");
+const stepEl = document.getElementById("step");
+let clipId = null;
+let n = 0;
+let i = 0;
+let labels = [];
+let bitmap = null;
+function boxesFor(index) {
+  return labels.filter((b) => b.clip === clipId && b.index === index);
+}
+function draw() {
+  if (!bitmap) return;
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  ctx.drawImage(bitmap, 0, 0);
+  const box = Number(boxEl.value) || 32;
+  for (const b of boxesFor(i)) {
+    ctx.strokeStyle = b.kind === "ball" ? "#0f0" : "#f66";
+    ctx.lineWidth = b.filled ? 1 : 2;
+    if (b.kind === "ball") {
+      ctx.strokeRect(b.cx - box / 2, b.cy - box / 2, box, box);
+    } else {
+      ctx.strokeRect(8, 8, 40, 16);
+      ctx.fillStyle = "#f66";
+      ctx.fillText("empty", 12, 20);
+    }
+  }
+}
+async function show(index) {
+  if (!clipId || n === 0) return;
+  i = Math.max(0, Math.min(n - 1, index));
+  scrub.value = String(i);
+  idxEl.textContent = i + " / " + (n - 1);
+  const r = await fetch("/api/clips/" + clipId + "/frame/" + i, { cache: "no-store" });
+  if (!r.ok) return;
+  const blob = await r.blob();
+  if (bitmap) bitmap.close();
+  bitmap = await createImageBitmap(blob);
+  draw();
+  paintStatus();
+}
+function paintStatus() {
+  const balls = labels.filter((b) => b.kind === "ball" && !b.filled).length;
+  const empty = labels.filter((b) => b.kind === "empty").length;
+  statusEl.textContent = balls + " ball clicks, " + empty + " empty frames";
+}
+async function loadLabels() {
+  const body = await (await fetch("/api/labels")).json();
+  labels = body.labels || [];
+  if (body.box) boxEl.value = String(body.box);
+  paintStatus();
+  draw();
+}
+async function save(kind, cx, cy) {
+  const body = { clip: clipId, index: i, kind, cx, cy, box: Number(boxEl.value) || 32 };
+  const r = await fetch("/api/labels", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    statusEl.textContent = r.status + " " + await r.text();
+    return;
+  }
+  await loadLabels();
+  await show(i + (Number(stepEl.value) || 1));
+}
+function imagePoint(ev) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (ev.clientX - r.left) * canvas.width / r.width,
+    y: (ev.clientY - r.top) * canvas.height / r.height,
+  };
+}
+canvas.onclick = (ev) => {
+  const p = imagePoint(ev);
+  save("ball", p.x, p.y);
+};
+canvas.onmousemove = (ev) => {
+  if (!bitmap) return;
+  const p = imagePoint(ev);
+  const s = 22;
+  zctx.imageSmoothingEnabled = false;
+  zctx.drawImage(bitmap, p.x - s, p.y - s, s * 2, s * 2, 0, 0, 180, 180);
+  zctx.strokeStyle = "#0f0";
+  zctx.strokeRect(78, 78, 24, 24);
+};
+document.getElementById("prev").onclick = () => show(i - 1);
+document.getElementById("next").onclick = () => show(i + 1);
+scrub.oninput = () => show(Number(scrub.value));
+boxEl.onchange = draw;
+window.onkeydown = (ev) => {
+  if (ev.key === "n") save("empty", null, null);
+  if (ev.key === "u") save("clear", null, null);
+  if (ev.key === "ArrowLeft") show(i - 1);
+  if (ev.key === "ArrowRight") show(i + 1);
+};
+async function boot() {
+  const session = await (await fetch("/api/session")).json();
+  await loadLabels();
+  for (const id of session.clips || []) {
+    const b = document.createElement("button");
+    b.className = "clip";
+    b.dataset.id = id;
+    b.textContent = id;
+    b.onclick = async () => {
+      clipId = id;
+      const clip = await (await fetch("/api/clips/" + id)).json();
+      n = (clip.meta && clip.meta.frames) || 0;
+      scrub.max = String(Math.max(0, n - 1));
+      [...clipsEl.children].forEach((el) => el.classList.toggle("on", el.dataset.id === id));
+      await show(0);
+    };
+    clipsEl.appendChild(b);
+  }
+  if ((session.clips || []).length) clipsEl.children[0].click();
+}
+boot();
+</script>
+</body>
+</html>
