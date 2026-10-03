@@ -9,18 +9,28 @@ img { background: #000; max-width: 100%; }
 button { margin: 4px 4px 0 0; padding: 6px 10px; }
 .row { margin-top: 12px; }
 #status { margin-top: 8px; min-height: 1.2em; }
+#stats { margin-top: 6px; font-family: monospace; color: #9c9; }
 </style>
 </head>
 <body>
 <h1>Capture</h1>
 <p>Manual exposure. Auto-exposure is off.</p>
 <img id="preview" alt="live preview" width="640">
+<div id="stats">waiting for stats</div>
 <div class="row">
   <button data-act="exposure" data-delta="-100">Exposure −100 µs</button>
   <button data-act="exposure" data-delta="100">Exposure +100 µs</button>
   <button data-act="gain" data-delta="-10">ISO −10</button>
   <button data-act="gain" data-delta="10">ISO +10</button>
 </div>
+<div class="row">
+  <button data-act="flood" data-delta="-20">Flood −20%</button>
+  <button data-act="flood" data-delta="20">Flood +20%</button>
+  <button data-act="dot" data-delta="-20">Dot −20%</button>
+  <button data-act="dot" data-delta="20">Dot +20%</button>
+</div>
+<p>Both IR lights start off. Flood is the illuminator. Dot is the laser projector.</p>
+<p>The right camera is recorded with the left. Depth is written when you stop.</p>
 <div class="row">
   <button id="record">Record</button>
   <button id="stop" disabled>Stop</button>
@@ -47,6 +57,18 @@ async function tick() {
 }
 setInterval(tick, 100);
 tick();
+const stats = document.getElementById("stats");
+async function pollStats() {
+  const r = await fetch("/api/stats", { cache: "no-store" });
+  if (!r.ok) return;
+  const s = await r.json();
+  if (!s) return;
+  stats.textContent =
+    `left ${s.left_fps} fps, right ${s.right_fps} fps, pairs ${s.pair_fps} fps | ` +
+    `gaps L${s.left_gaps} R${s.right_gaps}, unpaired ${s.unpaired}, record drops ${s.record_drops}`;
+}
+setInterval(pollStats, 1000);
+pollStats();
 async function post(path, body) {
   const r = await fetch(path, {
     method: "POST",

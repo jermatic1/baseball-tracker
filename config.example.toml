@@ -1,9 +1,11 @@
 [capture]
-width = 1280
-height = 800
-fps = 60
-exposure_us = 1000
-gain = 100
+# 640x400 is the OV9282 binned mode. The OAK-D delivers about 200 frames a
+# second across both eyes, so 100 fps is the highest rate with no drops.
+width = 640
+height = 400
+fps = 100
+exposure_us = 800
+gain = 800
 
 [mount]
 distance_from_plate_m = 2.1

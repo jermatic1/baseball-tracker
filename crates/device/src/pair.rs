@@ -7,6 +7,35 @@ pub struct Stamped<T> {
     pub value: T,
 }
 
+pub fn take_matched_within<T, U>(
+    left: &mut VecDeque<Stamped<T>>,
+    right: &mut VecDeque<Stamped<U>>,
+    tol_ns: u64,
+) -> Option<(Stamped<T>, Stamped<U>)> {
+    loop {
+        let (Some(l), Some(r)) = (left.front(), right.front()) else {
+            return None;
+        };
+        let synced =
+            l.seq == r.seq || (l.t_ns != 0 && r.t_ns != 0 && l.t_ns.abs_diff(r.t_ns) <= tol_ns);
+        if synced {
+            let l = left.pop_front().unwrap();
+            let r = right.pop_front().unwrap();
+            return Some((l, r));
+        }
+        let left_older = if l.t_ns != 0 && r.t_ns != 0 && l.t_ns != r.t_ns {
+            l.t_ns < r.t_ns
+        } else {
+            l.seq < r.seq
+        };
+        if left_older {
+            left.pop_front();
+        } else {
+            right.pop_front();
+        }
+    }
+}
+
 pub fn push_pending<T>(q: &mut VecDeque<Stamped<T>>, item: Stamped<T>, max: usize) {
     q.push_back(item);
     while q.len() > max {
@@ -14,6 +43,7 @@ pub fn push_pending<T>(q: &mut VecDeque<Stamped<T>>, item: Stamped<T>, max: usiz
     }
 }
 
+#[cfg(test)]
 pub fn take_matched<T, U>(
     left: &mut VecDeque<Stamped<T>>,
     depth: &mut VecDeque<Stamped<U>>,
@@ -87,6 +117,22 @@ mod tests {
         }]);
         let (l, d) = take_matched(&mut left, &mut depth).unwrap();
         assert_eq!((l.value, d.value), (7, 8));
+    }
+
+    #[test]
+    fn matches_timestamps_within_tolerance() {
+        let mut left = VecDeque::from([Stamped {
+            seq: 1,
+            t_ns: 1_000,
+            value: 1,
+        }]);
+        let mut right = VecDeque::from([Stamped {
+            seq: 9,
+            t_ns: 1_400,
+            value: 2,
+        }]);
+        let (l, r) = take_matched_within(&mut left, &mut right, 500).unwrap();
+        assert_eq!((l.value, r.value), (1, 2));
     }
 
     #[test]

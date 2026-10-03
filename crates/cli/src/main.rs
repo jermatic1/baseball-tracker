@@ -4,6 +4,7 @@ mod convert;
 mod detect;
 mod error;
 mod jpeg;
+mod label;
 mod live;
 mod review;
 
@@ -14,6 +15,7 @@ use clap::{Parser, Subcommand};
 
 use capture::capture;
 use convert::print_estimate;
+use label::label;
 use live::live;
 use review::review;
 
@@ -38,6 +40,11 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:7879")]
         bind: SocketAddr,
     },
+    Label {
+        session: PathBuf,
+        #[arg(long, default_value = "0.0.0.0:7881")]
+        bind: SocketAddr,
+    },
     Live {
         session: PathBuf,
         #[arg(long)]
@@ -50,6 +57,8 @@ enum Command {
         session: PathBuf,
         #[arg(long, default_value = "yolo26n.onnx")]
         model: String,
+        #[arg(long)]
+        clip: Option<String>,
     },
 }
 
@@ -69,20 +78,25 @@ async fn run() -> Result<(), String> {
             once,
         } => capture(session, demo, once).await,
         Command::Review { session, bind } => review(session, bind).await,
+        Command::Label { session, bind } => label(session, bind).await,
         Command::Live { session, replay } => live(session, replay).await,
         Command::Synth { session } => synth(session),
-        Command::Detect { session, model } => detect(session, model).await,
+        Command::Detect {
+            session,
+            model,
+            clip,
+        } => detect(session, model, clip).await,
     }
 }
 
-async fn detect(dir: PathBuf, model: String) -> Result<(), String> {
+async fn detect(dir: PathBuf, model: String, clip: Option<String>) -> Result<(), String> {
     #[cfg(feature = "detect")]
     {
-        detect::detect(dir, model).await
+        detect::detect(dir, model, clip).await
     }
     #[cfg(not(feature = "detect"))]
     {
-        let _ = (dir, model);
+        let _ = (dir, model, clip);
         Err("rebuild with --features detect".into())
     }
 }

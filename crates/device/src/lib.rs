@@ -30,6 +30,7 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub left: Vec<u8>,
+    pub right: Vec<u8>,
     pub depth_mm: Vec<u16>,
     pub t_ns: u64,
     pub sequence: u64,
@@ -126,6 +127,7 @@ impl Camera for SyntheticCamera {
             width: self.width,
             height: self.height,
             left,
+            right: Vec::new(),
             depth_mm: depth,
             t_ns: self.t_ns,
             sequence: self.sequence,
@@ -171,4 +173,4 @@ mod pair;
 #[cfg(feature = "oak")]
 mod oak;
 #[cfg(feature = "oak")]
-pub use oak::OakCamera;
+pub use oak::{CaptureStats, OakCamera};

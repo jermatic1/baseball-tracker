@@ -4,11 +4,22 @@ use std::path::PathBuf;
 
 use tracker::{BallBox, DetFrame, Detections};
 
-pub async fn detect(path: PathBuf, model: String) -> Result<(), String> {
+pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Result<(), String> {
     let session = tracker::Session::open(&path).map_err(|e| e.to_string())?;
     let mut yolo = ultralytics_inference::YOLOModel::load(&model).map_err(|e| e.to_string())?;
     let tmp = std::env::temp_dir().join("tracker-detect.jpg");
-    for id in session.clip_ids().map_err(|e| e.to_string())? {
+    let mut ids = session.clip_ids().map_err(|e| e.to_string())?;
+    if let Some(clip) = clip {
+        let id = match clip.parse::<u32>() {
+            Ok(n) => format!("{n:04}"),
+            Err(_) => clip,
+        };
+        if !ids.iter().any(|s| s == &id) {
+            return Err(format!("no clip {id}"));
+        }
+        ids = vec![id];
+    }
+    for id in ids {
         let clip = session.load_clip(&id).map_err(|e| e.to_string())?;
         let stamps = read_stamps(&clip.dir.join("stamps.bin"), clip.meta.frame_count)?;
         let mut frames = Vec::with_capacity(clip.meta.frame_count);
@@ -30,7 +41,7 @@ pub async fn detect(path: PathBuf, model: String) -> Result<(), String> {
                             .get(&class_id)
                             .map(String::as_str)
                             .unwrap_or("");
-                        if class_id != 32 && name != "sports ball" {
+                        if !is_ball(class_id, name, result.names.len()) {
                             continue;
                         }
                         let x1 = xyxy[[b, 0]] as f64;
@@ -70,6 +81,14 @@ pub async fn detect(path: PathBuf, model: String) -> Result<(), String> {
     }
     let _ = std::fs::remove_file(tmp);
     Ok(())
+}
+
+fn is_ball(class_id: usize, name: &str, n_classes: usize) -> bool {
+    name == "sports ball"
+        || name == "ball"
+        || name == "baseball"
+        || class_id == 32
+        || (n_classes == 1 && class_id == 0)
 }
 
 fn write_jpeg(path: &std::path::Path, gray: &[u8], width: u32, height: u32) -> Result<(), String> {

@@ -74,6 +74,8 @@ async fn clip_api(
         "fps": clip.meta.fps,
         "exposure_us": clip.meta.exposure_us,
         "gain": clip.meta.gain,
+        "ir_flood": clip.meta.ir_flood,
+        "ir_dot": clip.meta.ir_dot,
         "sequence_gaps": clip.meta.sequence_gaps,
     });
     let detections = st.session.load_detections(&id).ok();

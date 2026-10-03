@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::SessionConfig;
+use crate::stereo::{self, StereoCalib};
 use crate::track::{BallBox, DetFrame};
 use crate::TrackerError;
 
@@ -13,6 +14,7 @@ pub struct StoredFrame {
     pub width: u32,
     pub height: u32,
     pub left: Vec<u8>,
+    pub right: Vec<u8>,
     pub depth_mm: Vec<u16>,
     pub t_ns: u64,
     pub sequence: u64,
@@ -27,6 +29,10 @@ pub struct ClipMeta {
     pub exposure_us: u32,
     pub gain: u32,
     pub sequence_gaps: bool,
+    #[serde(default)]
+    pub ir_flood: f32,
+    #[serde(default)]
+    pub ir_dot: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,7 +75,11 @@ impl Clip {
             return Err(TrackerError::Other(format!("frame {i} out of range")));
         }
         let n = (self.meta.width as usize) * (self.meta.height as usize);
-        let mut f = File::open(self.dir.join("depth.u16"))?;
+        let path = self.dir.join("depth.u16");
+        if !path.exists() {
+            return Ok(vec![0u16; n]);
+        }
+        let mut f = File::open(path)?;
         f.seek(SeekFrom::Start((i * n * 2) as u64))?;
         let mut bytes = vec![0u8; n * 2];
         f.read_exact(&mut bytes)?;
@@ -91,6 +101,7 @@ pub struct ClipWriter {
     id: String,
     dir: PathBuf,
     left: File,
+    right: File,
     depth: File,
     stamps: File,
     count: usize,
@@ -100,8 +111,13 @@ pub struct ClipWriter {
     last_t: Option<u64>,
     gaps: bool,
     last_seq: Option<u64>,
+    wrote_depth: bool,
+    wrote_right: bool,
+    calib: StereoCalib,
     exposure_us: u32,
     gain: u32,
+    ir_flood: f32,
+    ir_dot: f32,
     fps_fallback: f64,
 }
 
@@ -120,14 +136,49 @@ impl ClipWriter {
         self.last_seq = Some(frame.sequence);
         self.last_t = Some(frame.t_ns);
         self.left.write_all(&frame.left)?;
-        write_depth(&mut self.depth, &frame.depth_mm)?;
+        if !frame.depth_mm.is_empty() {
+            write_depth(&mut self.depth, &frame.depth_mm)?;
+            self.wrote_depth = true;
+        }
+        if !frame.right.is_empty() {
+            self.right.write_all(&frame.right)?;
+            self.wrote_right = true;
+        }
         self.stamps.write_all(&frame.t_ns.to_le_bytes())?;
         self.stamps.write_all(&frame.sequence.to_le_bytes())?;
         self.count += 1;
         Ok(())
     }
 
-    pub fn finish(self) -> Result<String, TrackerError> {
+    pub fn finish(mut self) -> Result<String, TrackerError> {
+        if self.wrote_right && !self.wrote_depth && self.count > 0 {
+            eprintln!("computing depth for {} frames", self.count);
+            self.left.flush()?;
+            self.right.flush()?;
+            match stereo::write_depth_file(
+                &self.dir,
+                self.width,
+                self.height,
+                self.count,
+                self.calib,
+                &mut self.depth,
+            ) {
+                Ok(()) => self.wrote_depth = true,
+                Err(e) => eprintln!("depth failed: {e}"),
+            }
+        }
+        if !self.wrote_depth {
+            let path = self.dir.join("depth.u16");
+            if path.exists() {
+                let _ = fs::remove_file(path);
+            }
+        }
+        if !self.wrote_right {
+            let path = self.dir.join("right.gray");
+            if path.exists() {
+                let _ = fs::remove_file(path);
+            }
+        }
         let dt = match (self.first_t, self.last_t) {
             (Some(a), Some(b)) if self.count >= 2 && b > a => (b - a) as f64 / 1e9,
             _ => 0.0,
@@ -145,6 +196,8 @@ impl ClipWriter {
             exposure_us: self.exposure_us,
             gain: self.gain,
             sequence_gaps: self.gaps,
+            ir_flood: self.ir_flood,
+            ir_dot: self.ir_dot,
         };
         fs::write(
             self.dir.join("meta.json"),
@@ -250,6 +303,8 @@ impl Session {
             exposure_us,
             gain,
             sequence_gaps,
+            ir_flood: 0.0,
+            ir_dot: 0.0,
         };
         fs::write(dir.join("meta.json"), serde_json::to_vec_pretty(&meta)?)?;
 
@@ -265,7 +320,14 @@ impl Session {
         Ok(id)
     }
 
-    pub fn begin_clip(&self, exposure_us: u32, gain: u32) -> Result<ClipWriter, TrackerError> {
+    pub fn begin_clip(
+        &self,
+        exposure_us: u32,
+        gain: u32,
+        ir_flood: f32,
+        ir_dot: f32,
+        calib: StereoCalib,
+    ) -> Result<ClipWriter, TrackerError> {
         let next = self
             .clip_ids()?
             .iter()
@@ -277,12 +339,14 @@ impl Session {
         let dir = self.clip_dir(&id);
         fs::create_dir_all(&dir)?;
         let left = File::create(dir.join("left.gray"))?;
+        let right = File::create(dir.join("right.gray"))?;
         let depth = File::create(dir.join("depth.u16"))?;
         let stamps = File::create(dir.join("stamps.bin"))?;
         Ok(ClipWriter {
             id,
             dir,
             left,
+            right,
             depth,
             stamps,
             count: 0,
@@ -292,8 +356,13 @@ impl Session {
             last_t: None,
             gaps: false,
             last_seq: None,
+            wrote_depth: false,
+            wrote_right: false,
+            calib,
             exposure_us,
             gain,
+            ir_flood,
+            ir_dot,
             fps_fallback: self.config.capture.fps,
         })
     }
@@ -428,6 +497,7 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
             width: w,
             height: h,
             left,
+            right: Vec::new(),
             depth_mm: depth,
             t_ns,
             sequence: i as u64,

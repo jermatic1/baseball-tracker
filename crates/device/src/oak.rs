@@ -1,23 +1,47 @@
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use depthai::camera::{
-    CameraBoardSocket, CameraNode, CameraOutputConfig, ImageFrame, ImageFrameType, ManualExposure,
-    ResizeMode,
+    CameraBoardSocket, CameraBuildConfig, CameraOutputConfig, ImageFrame, ImageFrameType,
+    ManualExposure, ResizeMode,
 };
 use depthai::pipeline::Pipeline;
-use depthai::{Device, InputQueue, MessageQueue, StereoDepthNode, StereoPresetMode};
+use depthai::{Device, InputQueue, MessageQueue};
 
 use crate::pair::{self, Stamped};
 use crate::{Camera, Frame, Intrinsics};
 
-const QUEUE: u32 = 32;
-const PENDING: usize = 8;
+const QUEUE: u32 = 120;
+const FRAME_POOL: i32 = 16;
+const STATS_PERIOD: Duration = Duration::from_secs(1);
+/// Aggregate host throughput the RVC2 XLink firmware sustains, per Luxonis.
+const XLINK_LIMIT_MB_S: f64 = 150.0;
+
+/// Frame counts for one stats interval.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CaptureStats {
+    pub seconds: f64,
+    pub left: u64,
+    pub right: u64,
+    pub left_gaps: u64,
+    pub right_gaps: u64,
+    pub pairs: u64,
+    pub unpaired: u64,
+}
+
+#[derive(Default)]
+struct Counters {
+    stats: CaptureStats,
+    last_seq_left: Option<u64>,
+    last_seq_right: Option<u64>,
+    since: Option<Instant>,
+}
 
 pub struct OakCamera {
+    device: Device,
     _pipeline: Pipeline,
     q_left: MessageQueue,
-    q_depth: MessageQueue,
+    q_right: MessageQueue,
     ctrl_left: InputQueue,
     ctrl_right: InputQueue,
     width: u32,
@@ -25,10 +49,14 @@ pub struct OakCamera {
     intrinsics: Intrinsics,
     exposure_us: u32,
     gain: u32,
+    ir_flood: f32,
+    ir_dot: f32,
     controls_sent: bool,
+    lights_sent: bool,
     pending_left: VecDeque<Stamped<Vec<u8>>>,
-    pending_depth: VecDeque<Stamped<Vec<u16>>>,
-    logged_size: bool,
+    pending_right: VecDeque<Stamped<Vec<u8>>>,
+    calibration: Option<String>,
+    counters: Counters,
 }
 
 impl OakCamera {
@@ -42,81 +70,64 @@ impl OakCamera {
         let exposure_us = exposure_us.max(1);
         let iso = gain.clamp(100, 1600);
         let device = Device::new().map_err(|e| e.to_string())?;
+        warn_if_over_budget(width, height, fps);
+        let _ = device.set_ir_flood_light_intensity(0.0);
         let _ = device.set_ir_laser_dot_projector_intensity(0.0);
         let pipeline = Pipeline::new()
             .with_device(&device)
+            .xlink_chunk_size(0)
             .build()
             .map_err(|e| e.to_string())?;
-        let left = pipeline
-            .create_with::<CameraNode, _>(CameraBoardSocket::CamB)
-            .map_err(|e| e.to_string())?;
-        let right = pipeline
-            .create_with::<CameraNode, _>(CameraBoardSocket::CamC)
-            .map_err(|e| e.to_string())?;
-        left.set_initial_manual_exposure(exposure_us, iso)
-            .map_err(|e| e.to_string())?;
-        right
-            .set_initial_manual_exposure(exposure_us, iso)
-            .map_err(|e| e.to_string())?;
-        let cam_cfg = CameraOutputConfig {
+        let out_cfg = CameraOutputConfig {
             size: (width, height),
             frame_type: Some(ImageFrameType::GRAY8),
-            resize_mode: ResizeMode::Crop,
+            resize_mode: ResizeMode::Stretch,
             fps: Some(fps),
             enable_undistortion: None,
         };
-        let out_left = left
-            .request_output(cam_cfg.clone())
+        let open_eye = |socket: CameraBoardSocket| -> Result<(MessageQueue, InputQueue), String> {
+            // Pin the sensor mode so a 640x400 request uses the binned readout
+            // rather than a downscaled full-resolution frame.
+            let cam = pipeline
+                .create_camera_unbuilt()
+                .map_err(|e| e.to_string())?;
+            cam.build(CameraBuildConfig {
+                board_socket: socket,
+                sensor_resolution: Some((width, height)),
+                sensor_fps: Some(fps),
+            })
             .map_err(|e| e.to_string())?;
-        let out_right = right.request_output(cam_cfg).map_err(|e| e.to_string())?;
-        let stereo = pipeline
-            .create::<StereoDepthNode>()
-            .map_err(|e| e.to_string())?;
-        stereo.set_default_profile_preset(StereoPresetMode::Robotics);
-        stereo.set_left_right_check(true);
-        stereo
-            .set_input_resolution(width as i32, height as i32)
-            .map_err(|e| e.to_string())?;
-        stereo
-            .set_temporal_filter(false)
-            .map_err(|e| e.to_string())?;
-        stereo
-            .set_spatial_filter(false)
-            .map_err(|e| e.to_string())?;
-        stereo.set_decimation(1).map_err(|e| e.to_string())?;
-        stereo.set_output_size(width as i32, height as i32);
-        out_left
-            .link_to(stereo.as_node(), Some("left"))
-            .map_err(|e| e.to_string())?;
-        out_right
-            .link_to(stereo.as_node(), Some("right"))
-            .map_err(|e| e.to_string())?;
-        let rectified = stereo
-            .as_node()
-            .output("rectifiedLeft")
-            .map_err(|e| e.to_string())?;
-        let depth_src = stereo.depth().map_err(|e| e.to_string())?;
-        let q_left = rectified
-            .create_message_queue(QUEUE, false)
-            .map_err(|e| e.to_string())?;
-        let q_depth = depth_src
-            .create_message_queue(QUEUE, false)
-            .map_err(|e| e.to_string())?;
-        let ctrl_left = left
-            .inputControl()
-            .map_err(|e| e.to_string())?
-            .create_input_queue(4, false)
-            .map_err(|e| e.to_string())?;
-        let ctrl_right = right
-            .inputControl()
-            .map_err(|e| e.to_string())?
-            .create_input_queue(4, false)
-            .map_err(|e| e.to_string())?;
+            cam.set_raw_num_frames_pool(FRAME_POOL)
+                .map_err(|e| e.to_string())?;
+            cam.set_isp_num_frames_pool(FRAME_POOL)
+                .map_err(|e| e.to_string())?;
+            cam.set_initial_manual_exposure(exposure_us, iso)
+                .map_err(|e| e.to_string())?;
+            let queue = cam
+                .request_output(out_cfg.clone())
+                .map_err(|e| e.to_string())?
+                .create_message_queue(QUEUE, false)
+                .map_err(|e| e.to_string())?;
+            let ctrl = cam
+                .inputControl()
+                .map_err(|e| e.to_string())?
+                .create_input_queue(4, false)
+                .map_err(|e| e.to_string())?;
+            Ok((queue, ctrl))
+        };
+        let (q_left, ctrl_left) = open_eye(CameraBoardSocket::CamB)?;
+        let (q_right, ctrl_right) = open_eye(CameraBoardSocket::CamC)?;
         pipeline.start().map_err(|e| e.to_string())?;
+        let calibration = pipeline
+            .calibration_data_json()
+            .ok()
+            .flatten()
+            .map(|v| v.to_string());
         let mut cam = Self {
+            device,
             _pipeline: pipeline,
             q_left,
-            q_depth,
+            q_right,
             ctrl_left,
             ctrl_right,
             width,
@@ -124,14 +135,20 @@ impl OakCamera {
             intrinsics: Intrinsics::from_fov(width, height, 80.0, 55.0),
             exposure_us,
             gain: iso,
+            ir_flood: 0.0,
+            ir_dot: 0.0,
             controls_sent: false,
+            lights_sent: true,
             pending_left: VecDeque::new(),
-            pending_depth: VecDeque::new(),
-            logged_size: false,
+            pending_right: VecDeque::new(),
+            calibration,
+            counters: Counters::default(),
         };
         cam.send_exposure(exposure_us, iso)?;
         cam.controls_sent = true;
-        println!("manual exposure {exposure_us} us iso {iso}");
+        println!(
+            "left+right mono {width}x{height} @ {fps} fps, exposure {exposure_us} us iso {iso}"
+        );
         Ok(cam)
     }
 
@@ -149,26 +166,99 @@ impl OakCamera {
         Ok(())
     }
 
-    fn send_exposure(&self, exposure_us: u32, iso: u32) -> Result<(), String> {
-        let left = ManualExposure::new(exposure_us, iso).map_err(|e| e.to_string())?;
-        let right = ManualExposure::new(exposure_us, iso).map_err(|e| e.to_string())?;
-        self.ctrl_left
-            .send_buffer(&left)
-            .map_err(|e| e.to_string())?;
-        self.ctrl_right
-            .send_buffer(&right)
-            .map_err(|e| e.to_string())?;
+    pub fn apply_lights(&mut self, flood: f32, dot: f32) -> Result<(), String> {
+        let flood = flood.clamp(0.0, 1.0);
+        let dot = dot.clamp(0.0, 1.0);
+        if self.lights_sent
+            && (self.ir_flood - flood).abs() < 0.001
+            && (self.ir_dot - dot).abs() < 0.001
+        {
+            return Ok(());
+        }
+        let flood_result = self
+            .device
+            .set_ir_flood_light_intensity(flood)
+            .map_err(|e| e.to_string());
+        let dot_result = self
+            .device
+            .set_ir_laser_dot_projector_intensity(dot)
+            .map_err(|e| e.to_string());
+        self.ir_flood = flood;
+        self.ir_dot = dot;
+        self.lights_sent = true;
+        flood_result?;
+        dot_result?;
+        println!("ir flood {flood:.2} dot {dot:.2}");
         Ok(())
     }
 
-    fn drain(&mut self) -> Result<(), String> {
-        while let Some(frame) = try_frame(&self.q_left)? {
-            let packed = pack_left(&frame, self.width, self.height)?;
-            pair::push_pending(&mut self.pending_left, packed, PENDING);
+    pub fn calibration_json(&self) -> Option<String> {
+        self.calibration.clone()
+    }
+
+    /// Counts since the previous call, once a full stats period has elapsed.
+    pub fn take_stats(&mut self) -> Option<CaptureStats> {
+        let now = Instant::now();
+        let since = *self.counters.since.get_or_insert(now);
+        if now.duration_since(since) < STATS_PERIOD {
+            return None;
         }
-        while let Some(frame) = try_frame(&self.q_depth)? {
-            let packed = pack_depth(&frame, self.width, self.height)?;
-            pair::push_pending(&mut self.pending_depth, packed, PENDING);
+        let mut stats = std::mem::take(&mut self.counters.stats);
+        stats.seconds = now.duration_since(since).as_secs_f64();
+        self.counters.since = Some(now);
+        Some(stats)
+    }
+
+    fn note_received(&mut self, side: Side, seq: u64) {
+        let c = &mut self.counters;
+        let (count, gaps, last) = match side {
+            Side::Left => (
+                &mut c.stats.left,
+                &mut c.stats.left_gaps,
+                &mut c.last_seq_left,
+            ),
+            Side::Right => (
+                &mut c.stats.right,
+                &mut c.stats.right_gaps,
+                &mut c.last_seq_right,
+            ),
+        };
+        *count += 1;
+        if let Some(prev) = *last {
+            if seq != prev + 1 {
+                *gaps += 1;
+            }
+        }
+        *last = Some(seq);
+    }
+
+    fn drain(&mut self, side: Side) -> Result<(), String> {
+        loop {
+            let frame = match side {
+                Side::Left => try_frame(&self.q_left)?,
+                Side::Right => try_frame(&self.q_right)?,
+            };
+            let Some(frame) = frame else {
+                return Ok(());
+            };
+            let stamped = pack_gray(&frame, self.width, self.height)?;
+            self.note_received(side, stamped.seq);
+            let pending = match side {
+                Side::Left => &mut self.pending_left,
+                Side::Right => &mut self.pending_right,
+            };
+            let before = pending.len();
+            pair::push_pending(pending, stamped, QUEUE as usize);
+            if pending.len() == before {
+                self.counters.stats.unpaired += 1;
+            }
+        }
+    }
+
+    fn send_exposure(&self, exposure_us: u32, iso: u32) -> Result<(), String> {
+        for ctrl in [&self.ctrl_left, &self.ctrl_right] {
+            let control = ManualExposure::new(exposure_us, iso).map_err(|e| e.to_string())?;
+            ctrl.send_buffer(&control).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -193,27 +283,44 @@ impl Camera for OakCamera {
     }
 
     fn poll(&mut self, _timeout: Duration) -> Result<Option<Frame>, String> {
-        self.drain()?;
-        let Some((left, depth)) =
-            pair::take_matched(&mut self.pending_left, &mut self.pending_depth)
-        else {
+        self.drain(Side::Left)?;
+        self.drain(Side::Right)?;
+        let before = self.pending_left.len() + self.pending_right.len();
+        let matched =
+            pair::take_matched_within(&mut self.pending_left, &mut self.pending_right, 2_000_000);
+        let consumed = before - self.pending_left.len() - self.pending_right.len();
+        let Some((left, right)) = matched else {
+            self.counters.stats.unpaired += consumed as u64;
             return Ok(None);
         };
-        if !self.logged_size {
-            self.logged_size = true;
-            println!(
-                "left {}x{} depth {}x{}",
-                self.width, self.height, self.width, self.height
-            );
-        }
+        self.counters.stats.pairs += 1;
+        self.counters.stats.unpaired += (consumed - 2) as u64;
         Ok(Some(Frame {
             width: self.width,
             height: self.height,
             left: left.value,
-            depth_mm: depth.value,
+            right: right.value,
+            depth_mm: Vec::new(),
             t_ns: left.t_ns,
             sequence: left.seq,
         }))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Side {
+    Left,
+    Right,
+}
+
+fn warn_if_over_budget(width: u32, height: u32, fps: f32) {
+    let frame_bytes = f64::from(width) * f64::from(height) * 2.0;
+    let mb_s = frame_bytes * f64::from(fps) / 1e6;
+    if mb_s > XLINK_LIMIT_MB_S {
+        let max_fps = XLINK_LIMIT_MB_S * 1e6 / frame_bytes;
+        println!(
+            "warning: {width}x{height} @ {fps} fps needs {mb_s:.0} MB/s, over the ~{XLINK_LIMIT_MB_S:.0} MB/s XLink limit; expect at most ~{max_fps:.0} fps"
+        );
     }
 }
 
@@ -224,17 +331,12 @@ fn try_frame(q: &MessageQueue) -> Result<Option<ImageFrame>, String> {
     }
 }
 
-fn stamp_of(frame: &ImageFrame) -> Result<(u64, u64), String> {
+fn pack_gray(frame: &ImageFrame, width: u32, height: u32) -> Result<Stamped<Vec<u8>>, String> {
     let seq = frame.sequence_num().map_err(|e| e.to_string())?.max(0) as u64;
     let t_ns = frame
         .timestamp_device()
         .map(|t| t.as_nanoseconds().max(0) as u64)
         .unwrap_or(0);
-    Ok((seq, t_ns))
-}
-
-fn pack_left(frame: &ImageFrame, width: u32, height: u32) -> Result<Stamped<Vec<u8>>, String> {
-    let (seq, t_ns) = stamp_of(frame)?;
     Ok(Stamped {
         seq,
         t_ns,
@@ -242,75 +344,24 @@ fn pack_left(frame: &ImageFrame, width: u32, height: u32) -> Result<Stamped<Vec<
     })
 }
 
-fn pack_depth(frame: &ImageFrame, width: u32, height: u32) -> Result<Stamped<Vec<u16>>, String> {
-    let (seq, t_ns) = stamp_of(frame)?;
-    Ok(Stamped {
-        seq,
-        t_ns,
-        value: copy_depth_mm(frame, width, height)?,
-    })
-}
-
-fn require_size(kind: &str, src_w: u32, src_h: u32, width: u32, height: u32) -> Result<(), String> {
-    if src_w != width || src_h != height {
-        return Err(format!(
-            "frame size {kind} is {src_w}x{src_h}, expected {width}x{height}"
-        ));
-    }
-    Ok(())
-}
-
 fn copy_gray(frame: &ImageFrame, width: u32, height: u32) -> Result<Vec<u8>, String> {
     let src_w = frame.width();
     let src_h = frame.height();
-    require_size("left", src_w, src_h, width, height)?;
+    if src_w != width || src_h != height {
+        return Err(format!(
+            "frame size is {src_w}x{src_h}, expected {width}x{height}"
+        ));
+    }
     let bytes = frame.as_bytes().map_err(|e| e.to_string())?;
     let stride = frame.stride().ok().filter(|&s| s > 0).unwrap_or(src_w) as usize;
     let row = width as usize;
     let mut out = vec![0u8; row * height as usize];
     for y in 0..height as usize {
         let src = y * stride;
-        let dst = y * row;
         if src + row > bytes.len() {
-            return Err("left frame shorter than its size".into());
+            return Err("frame shorter than its size".into());
         }
-        out[dst..dst + row].copy_from_slice(&bytes[src..src + row]);
-    }
-    Ok(out)
-}
-
-fn copy_depth_mm(frame: &ImageFrame, width: u32, height: u32) -> Result<Vec<u16>, String> {
-    let src_w = frame.width();
-    let src_h = frame.height();
-    require_size("depth", src_w, src_h, width, height)?;
-    let bytes = frame.as_bytes().map_err(|e| e.to_string())?;
-    let stride = frame
-        .stride()
-        .ok()
-        .filter(|&s| s > 0)
-        .unwrap_or(src_w.saturating_mul(2)) as usize;
-    let row = width as usize;
-    let row_bytes = row * 2;
-    let mut out = vec![0u16; row * height as usize];
-    if cfg!(target_endian = "little")
-        && stride == row_bytes
-        && bytes.len() >= row_bytes * height as usize
-    {
-        let dst =
-            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, out.len() * 2) };
-        dst.copy_from_slice(&bytes[..out.len() * 2]);
-        return Ok(out);
-    }
-    for y in 0..height as usize {
-        let src = y * stride;
-        if src + row_bytes > bytes.len() {
-            return Err("depth frame shorter than its size".into());
-        }
-        let row_src = &bytes[src..src + row_bytes];
-        let dst = &mut out[y * row..(y + 1) * row];
-        for (d, chunk) in dst.iter_mut().zip(row_src.chunks_exact(2)) {
-            *d = u16::from_le_bytes([chunk[0], chunk[1]]);
-        }
+        out[y * row..(y + 1) * row].copy_from_slice(&bytes[src..src + row]);
     }
     Ok(out)
 }

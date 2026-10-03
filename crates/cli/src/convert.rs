@@ -3,6 +3,7 @@ pub fn to_stored(frame: device::Frame) -> tracker::StoredFrame {
         width: frame.width,
         height: frame.height,
         left: frame.left,
+        right: frame.right,
         depth_mm: frame.depth_mm,
         t_ns: frame.t_ns,
         sequence: frame.sequence,

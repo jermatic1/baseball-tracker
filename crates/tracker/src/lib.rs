@@ -2,6 +2,7 @@ pub mod config;
 pub mod geom;
 pub mod launch;
 pub mod session;
+pub mod stereo;
 pub mod track;
 
 pub use config::{CaptureConfig, MountConfig, SessionConfig, SimulatorConfig};
@@ -10,6 +11,7 @@ pub use launch::postable;
 pub use session::{
     write_synth, Clip, ClipMeta, ClipWriter, Detections, HitRecord, Session, StoredFrame,
 };
+pub use stereo::{stereo_calib_from_device, StereoCalib};
 pub use track::{select_hit, BallBox, DetFrame, Track};
 
 use geom::unproject;
@@ -216,7 +218,7 @@ mod tests {
     fn session_save_load_roundtrip() {
         let dir = temp_dir();
         let session = Session::create(&dir).unwrap();
-        assert_eq!(session.config.capture.width, 1280);
+        assert_eq!(session.config.capture.width, 640);
         let w = 8u32;
         let h = 4u32;
         let frames = vec![
@@ -224,6 +226,7 @@ mod tests {
                 width: w,
                 height: h,
                 left: (0..32).collect(),
+                right: Vec::new(),
                 depth_mm: (0..32).map(|i| i as u16 * 10).collect(),
                 t_ns: 0,
                 sequence: 1,
@@ -232,6 +235,7 @@ mod tests {
                 width: w,
                 height: h,
                 left: (32..64).map(|x| x as u8).collect(),
+                right: Vec::new(),
                 depth_mm: vec![7; 32],
                 t_ns: 16_666_667,
                 sequence: 2,

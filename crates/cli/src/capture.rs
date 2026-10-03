@@ -99,12 +99,18 @@ async fn capture_oak(path: PathBuf) -> Result<(), String> {
     let exposure_us = session.config.capture.exposure_us;
     let gain = session.config.capture.gain;
     let cam = device::OakCamera::open(width, height, fps.max(1.0), exposure_us, gain)?;
-    server::run(session, cam, exposure_us, gain).await
+    let calib = tracker::stereo_calib_from_device(cam.calibration_json().as_deref(), width);
+    println!(
+        "stereo fx {:.1} baseline {:.3} m",
+        calib.fx, calib.baseline_m
+    );
+    server::run(session, cam, exposure_us, gain, calib).await
 }
 
 #[cfg(feature = "oak")]
 mod server {
     use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -121,15 +127,21 @@ mod server {
     use crate::error::AppError;
     use crate::jpeg::encode_gray_jpeg;
 
-    const BIND: &str = "127.0.0.1:7880";
+    const BIND: &str = "0.0.0.0:7880";
+    const RECORD_QUEUE: usize = 32;
 
     struct CaptureState {
         latest: Option<Arc<tracker::StoredFrame>>,
         jpeg: Option<(Instant, Vec<u8>)>,
+        stats: Option<serde_json::Value>,
         exposure_us: u32,
         gain: u32,
+        ir_flood: f32,
+        ir_dot: f32,
+        calib: tracker::StereoCalib,
         session: tracker::Session,
         record_tx: Option<SyncSender<Option<Arc<tracker::StoredFrame>>>>,
+        record_drops: Arc<AtomicU64>,
         record_done: Option<Receiver<Result<String, String>>>,
     }
 
@@ -138,14 +150,20 @@ mod server {
         cam: device::OakCamera,
         exposure_us: u32,
         gain: u32,
+        calib: tracker::StereoCalib,
     ) -> Result<(), String> {
         let state = Arc::new(Mutex::new(CaptureState {
             latest: None,
             jpeg: None,
+            stats: None,
             exposure_us,
             gain,
+            ir_flood: 0.0,
+            ir_dot: 0.0,
+            calib,
             session,
             record_tx: None,
+            record_drops: Arc::new(AtomicU64::new(0)),
             record_done: None,
         }));
         let poll_state = Arc::clone(&state);
@@ -153,8 +171,11 @@ mod server {
         let app = Router::new()
             .route("/", get(index))
             .route("/preview.jpg", get(preview))
+            .route("/api/stats", get(stats))
             .route("/api/exposure", post(set_exposure))
             .route("/api/gain", post(set_gain))
+            .route("/api/flood", post(set_flood))
+            .route("/api/dot", post(set_dot))
             .route("/api/fps", post(set_fps))
             .route("/api/record", post(record))
             .route("/api/stop", post(stop))
@@ -170,18 +191,31 @@ mod server {
     }
 
     fn poll_loop(mut cam: device::OakCamera, state: Arc<Mutex<CaptureState>>) {
+        let record_drops = match state.lock() {
+            Ok(st) => Arc::clone(&st.record_drops),
+            Err(_) => return,
+        };
         loop {
-            let (exposure_us, gain) = {
+            if let Some(stats) = cam.take_stats() {
+                let drops = record_drops.swap(0, Ordering::Relaxed);
+                if let Ok(mut st) = state.lock() {
+                    st.stats = Some(stats_json(stats, drops));
+                }
+            }
+            let (exposure_us, gain, ir_flood, ir_dot) = {
                 let st = match state.lock() {
                     Ok(g) => g,
                     Err(_) => break,
                 };
-                (st.exposure_us, st.gain)
+                (st.exposure_us, st.gain, st.ir_flood, st.ir_dot)
             };
             if let Err(e) = cam.apply_controls(exposure_us, gain) {
                 eprintln!("{e}");
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
+            }
+            if let Err(e) = cam.apply_lights(ir_flood, ir_dot) {
+                eprintln!("{e}");
             }
             match cam.poll(Duration::from_millis(0)) {
                 Ok(Some(frame)) => {
@@ -194,7 +228,9 @@ mod server {
                     st.latest = Some(Arc::clone(&stored));
                     drop(st);
                     if let Some(tx) = tx {
-                        let _ = tx.send(Some(stored));
+                        if tx.try_send(Some(stored)).is_err() {
+                            record_drops.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(1)),
@@ -211,6 +247,26 @@ mod server {
 
     async fn index() -> Html<&'static str> {
         Html(include_str!("capture.html"))
+    }
+
+    async fn stats(
+        State(state): State<Arc<Mutex<CaptureState>>>,
+    ) -> Result<Json<serde_json::Value>, AppError> {
+        let st = state.lock().map_err(|e| e.to_string())?;
+        Ok(Json(st.stats.clone().unwrap_or(serde_json::Value::Null)))
+    }
+
+    fn stats_json(s: device::CaptureStats, record_drops: u64) -> serde_json::Value {
+        let per_s = |n: u64| (n as f64 / s.seconds.max(1e-3)).round();
+        serde_json::json!({
+            "left_fps": per_s(s.left),
+            "right_fps": per_s(s.right),
+            "pair_fps": per_s(s.pairs),
+            "left_gaps": s.left_gaps,
+            "right_gaps": s.right_gaps,
+            "unpaired": s.unpaired,
+            "record_drops": record_drops,
+        })
     }
 
     async fn preview(State(state): State<Arc<Mutex<CaptureState>>>) -> Result<Response, AppError> {
@@ -280,6 +336,29 @@ mod server {
         Ok(Json(serde_json::json!({ "gain": next })))
     }
 
+    async fn set_flood(
+        State(state): State<Arc<Mutex<CaptureState>>>,
+        Json(body): Json<DeltaBody>,
+    ) -> Result<Json<serde_json::Value>, AppError> {
+        let mut st = state.lock().map_err(|e| e.to_string())?;
+        st.ir_flood = bump_light(st.ir_flood, body.delta);
+        Ok(Json(serde_json::json!({ "ir_flood": st.ir_flood })))
+    }
+
+    async fn set_dot(
+        State(state): State<Arc<Mutex<CaptureState>>>,
+        Json(body): Json<DeltaBody>,
+    ) -> Result<Json<serde_json::Value>, AppError> {
+        let mut st = state.lock().map_err(|e| e.to_string())?;
+        st.ir_dot = bump_light(st.ir_dot, body.delta);
+        Ok(Json(serde_json::json!({ "ir_dot": st.ir_dot })))
+    }
+
+    fn bump_light(current: f32, delta_percent: i32) -> f32 {
+        let next = (current * 100.0).round() as i32 + delta_percent;
+        next.clamp(0, 100) as f32 / 100.0
+    }
+
     async fn set_fps(
         State(state): State<Arc<Mutex<CaptureState>>>,
         Json(body): Json<FpsBody>,
@@ -298,9 +377,9 @@ mod server {
         }
         let writer = st
             .session
-            .begin_clip(st.exposure_us, st.gain)
+            .begin_clip(st.exposure_us, st.gain, st.ir_flood, st.ir_dot, st.calib)
             .map_err(|e| e.to_string())?;
-        let (tx, rx) = mpsc::sync_channel(8);
+        let (tx, rx) = mpsc::sync_channel(RECORD_QUEUE);
         let (done_tx, done_rx) = mpsc::channel();
         std::thread::spawn(move || record_loop(writer, rx, done_tx));
         st.record_tx = Some(tx);

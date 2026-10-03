@@ -45,22 +45,39 @@ tasks:
   capture:
     desc: Live capture server
     cmds:
-      - cargo run -p cli --features oak --quiet -- capture sessions/{{.SESSION}}
+      - cargo run -p cli --release --features oak --quiet -- capture sessions/{{.SESSION}}
 
   review:
     desc: Review a session
     cmds:
       - cargo run -p cli --quiet -- review sessions/{{.SESSION}}
 
+  label:
+    desc: Click the ball in saved frames
+    cmds:
+      - cargo run -p cli --quiet -- label sessions/{{.SESSION}}
+
+  train:
+    desc: Fine-tune a ball detector from labels and export ONNX
+    env:
+      UV_NO_PROJECT: "1"
+    cmds:
+      - uv venv --allow-existing --python 3.12 .venv
+      - uv pip install --python .venv/bin/python ultralytics pillow --torch-backend=auto
+      - uv pip uninstall --python .venv/bin/python opencv-python
+      - uv pip install --python .venv/bin/python opencv-python-headless
+      - .venv/bin/python -c "import torch, ultralytics; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+      - .venv/bin/python tools/train.py sessions/{{.SESSION}}
+
   detect:
     desc: Detect balls in a saved session
     cmds:
-      - cargo run -p cli --features detect --quiet -- detect sessions/{{.SESSION}}
+      - cargo run -p cli --features detect --quiet -- detect sessions/{{.SESSION}} --model {{.MODEL | default "models/ball.onnx"}} {{if .CLIP}}--clip {{.CLIP}}{{end}}
 
   camera:
     desc: Open the OAK and write one frame
     cmds:
-      - cargo run -p cli --features oak --quiet -- capture sessions/{{.SESSION}} --once
+      - cargo run -p cli --release --features oak --quiet -- capture sessions/{{.SESSION}} --once
 
   release:
     desc: Release build for this machine

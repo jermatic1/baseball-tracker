@@ -40,11 +40,11 @@ impl SessionConfig {
     pub fn example() -> Self {
         Self {
             capture: CaptureConfig {
-                width: 1280,
-                height: 800,
-                fps: 60.0,
-                exposure_us: 1000,
-                gain: 100,
+                width: 640,
+                height: 400,
+                fps: 100.0,
+                exposure_us: 800,
+                gain: 800,
             },
             mount: MountConfig {
                 distance_from_plate_m: 2.1,
