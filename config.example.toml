@@ -4,8 +4,10 @@
 width = 640
 height = 400
 fps = 100
-exposure_us = 800
-gain = 800
+# 600 us keeps a 70 mph ball round; drop to 400 for faster hitters.
+# Gain adds no visible noise on this sensor, so run it at the maximum.
+exposure_us = 600
+gain = 1600
 
 [mount]
 distance_from_plate_m = 2.1

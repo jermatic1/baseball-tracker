@@ -43,8 +43,8 @@ impl SessionConfig {
                 width: 640,
                 height: 400,
                 fps: 100.0,
-                exposure_us: 800,
-                gain: 800,
+                exposure_us: 600,
+                gain: 1600,
             },
             mount: MountConfig {
                 distance_from_plate_m: 2.1,
