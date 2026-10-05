@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 
-use tracker::{BallBox, DetFrame, Detections, StereoCalib};
+use tracker::{BallBox, DetFrame, Detections, Eye, StereoCalib};
 
 pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Result<(), String> {
     let session = tracker::Session::open(&path).map_err(|e| e.to_string())?;
@@ -22,13 +22,27 @@ pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Resul
     let offset = session.config.stereo.disparity_offset_px;
     for id in ids {
         let clip = session.load_clip(&id).map_err(|e| e.to_string())?;
-        let calib = StereoCalib::nominal(clip.meta.width).with_offset(offset);
+        // Factory rectification when the session saved its calibration;
+        // otherwise raw frames with the hand-calibrated offset.
+        let rectifier = session.rectifier(clip.meta.width, clip.meta.height);
+        let calib = match &rectifier {
+            Some(r) => r.calib(),
+            None => StereoCalib::nominal(clip.meta.width).with_offset(offset),
+        };
         let stamps = read_stamps(&clip.dir.join("stamps.bin"), clip.meta.frame_count)?;
         let mut frames = Vec::with_capacity(clip.meta.frame_count);
         for i in 0..clip.meta.frame_count {
             let left = clip.left_frame(i).map_err(|e| e.to_string())?;
             let right = clip.right_frame(i).ok();
             let depth = clip.depth_frame(i).map_err(|e| e.to_string())?;
+            let pair = match (&rectifier, &right) {
+                (Some(r), Some(raw_right)) => Some((
+                    r.rectify(&left, Eye::Left),
+                    r.rectify(raw_right, Eye::Right),
+                )),
+                (None, Some(raw_right)) => Some((left.clone(), raw_right.clone())),
+                _ => None,
+            };
             write_jpeg(&tmp, &left, clip.meta.width, clip.meta.height)?;
             let results = yolo
                 .predict(tmp.to_str().ok_or("temp path is not utf-8")?)
@@ -52,16 +66,13 @@ pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Resul
                         let x2 = xyxy[[b, 2]] as f64;
                         let y2 = xyxy[[b, 3]] as f64;
                         let (w, h) = (clip.meta.width, clip.meta.height);
-                        let precise = right.as_ref().and_then(|r| {
-                            tracker::stereo::depth_at(
-                                &left,
-                                r,
-                                w,
-                                h,
-                                (x1 + x2) * 0.5,
-                                (y1 + y2) * 0.5,
-                                calib,
-                            )
+                        let (cx, cy) = ((x1 + x2) * 0.5, (y1 + y2) * 0.5);
+                        let (cx, cy) = match &rectifier {
+                            Some(r) => r.to_rectified_left(cx, cy),
+                            None => (cx, cy),
+                        };
+                        let precise = pair.as_ref().and_then(|(l, r)| {
+                            tracker::stereo::depth_at(l, r, w, h, cx, cy, calib)
                         });
                         balls.push(BallBox {
                             x: x1,

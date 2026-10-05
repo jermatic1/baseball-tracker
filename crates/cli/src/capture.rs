@@ -103,6 +103,10 @@ async fn capture_oak(path: PathBuf) -> Result<(), String> {
     if let Some(json) = &device_calib {
         let _ = std::fs::write(session.dir.join("calibration.json"), json);
     }
+    match session.rectifier(width, height) {
+        Some(_) => println!("stereo rectification from device calibration"),
+        None => println!("no device calibration; using the disparity offset from config"),
+    }
     let calib = tracker::stereo_calib_from_device(device_calib.as_deref(), width)
         .with_offset(session.config.stereo.disparity_offset_px);
     println!(

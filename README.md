@@ -13,7 +13,7 @@ cargo run -p cli -- live sessions/demo --replay
 
 The capture page shows per-eye fps, sequence gaps, unpaired frames, and record-queue drops, refreshed every second. The OAK-D delivers about 200 frames a second across both eyes regardless of size, so the default is 640x400 at 100 fps, the highest rate with no drops. If the page shows gaps, lower `fps` in the session config.
 
-Speeds and angles depend on the `[mount]` and `[stereo]` sections of the session config. Measure the lens-to-tee distance, height, and side offset for your rig and set them as `config.example.toml` describes; the stereo offset calibrates the unrectified eyes from that same distance.
+Speeds and angles depend on the camera pose in the session config. With the home plate clear and no ball on it, `task calibrate SESSION=<name>` (or the Calibrate button on the capture page) finds the plate in the image, solves the pose, and writes `[mount]`. Depth uses the camera's own factory stereo calibration, saved into the session at capture; sessions recorded without it fall back to the `[stereo]` disparity offset in the config.
 
 Stock `sports ball` misses a baseball in these gray frames. Label clicks with `task label`, then `task train` writes `models/ball.onnx`. Detect that model with `--model models/ball.onnx`. `task train` asks uv to install PyTorch for the GPU on this machine. The ROCm or CUDA driver has to already be installed. Training is not part of the tracker binary.
 

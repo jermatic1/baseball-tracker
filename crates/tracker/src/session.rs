@@ -499,6 +499,12 @@ impl Session {
         Ok(())
     }
 
+    /// Rectification from the device calibration saved at capture, if any.
+    pub fn rectifier(&self, width: u32, height: u32) -> Option<crate::rectify::Rectifier> {
+        let text = fs::read_to_string(self.dir.join("calibration.json")).ok()?;
+        crate::rectify::Rectifier::from_json(&text, width, height).ok()
+    }
+
     pub fn hits(&self) -> Result<Vec<HitRecord>, TrackerError> {
         let path = self.dir.join("hits.jsonl");
         if !path.exists() {

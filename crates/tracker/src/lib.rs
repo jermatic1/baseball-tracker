@@ -3,6 +3,7 @@ pub mod geom;
 pub mod launch;
 pub mod mot;
 pub mod plate;
+pub mod rectify;
 pub mod session;
 pub mod stereo;
 pub mod track;
@@ -11,6 +12,7 @@ pub use config::{CaptureConfig, MountConfig, SessionConfig, SimulatorConfig};
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
 pub use launch::postable;
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
+pub use rectify::{Eye, Rectifier};
 pub use session::{
     write_synth, Clip, ClipMeta, ClipWriter, Contact, ContactKind, Detections, EventKind,
     HitRecord, HitType, Session, StoredFrame,
