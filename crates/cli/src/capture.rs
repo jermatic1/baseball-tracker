@@ -99,10 +99,15 @@ async fn capture_oak(path: PathBuf) -> Result<(), String> {
     let exposure_us = session.config.capture.exposure_us;
     let gain = session.config.capture.gain;
     let cam = device::OakCamera::open(width, height, fps.max(1.0), exposure_us, gain)?;
-    let calib = tracker::stereo_calib_from_device(cam.calibration_json().as_deref(), width);
+    let device_calib = cam.calibration_json();
+    if let Some(json) = &device_calib {
+        let _ = std::fs::write(session.dir.join("calibration.json"), json);
+    }
+    let calib = tracker::stereo_calib_from_device(device_calib.as_deref(), width)
+        .with_offset(session.config.stereo.disparity_offset_px);
     println!(
-        "stereo fx {:.1} baseline {:.3} m",
-        calib.fx, calib.baseline_m
+        "stereo fx {:.1} baseline {:.3} m, disparity offset {:.1} px",
+        calib.fx, calib.baseline_m, calib.disparity_offset_px
     );
     server::run(session, cam, exposure_us, gain, calib).await
 }

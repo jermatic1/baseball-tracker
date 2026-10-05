@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 
-use tracker::{BallBox, DetFrame, Detections};
+use tracker::{BallBox, DetFrame, Detections, StereoCalib};
 
 pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Result<(), String> {
     let session = tracker::Session::open(&path).map_err(|e| e.to_string())?;
@@ -19,12 +19,15 @@ pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Resul
         }
         ids = vec![id];
     }
+    let offset = session.config.stereo.disparity_offset_px;
     for id in ids {
         let clip = session.load_clip(&id).map_err(|e| e.to_string())?;
+        let calib = StereoCalib::nominal(clip.meta.width).with_offset(offset);
         let stamps = read_stamps(&clip.dir.join("stamps.bin"), clip.meta.frame_count)?;
         let mut frames = Vec::with_capacity(clip.meta.frame_count);
         for i in 0..clip.meta.frame_count {
             let left = clip.left_frame(i).map_err(|e| e.to_string())?;
+            let right = clip.right_frame(i).ok();
             let depth = clip.depth_frame(i).map_err(|e| e.to_string())?;
             write_jpeg(&tmp, &left, clip.meta.width, clip.meta.height)?;
             let results = yolo
@@ -48,21 +51,25 @@ pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Resul
                         let y1 = xyxy[[b, 1]] as f64;
                         let x2 = xyxy[[b, 2]] as f64;
                         let y2 = xyxy[[b, 3]] as f64;
+                        let (w, h) = (clip.meta.width, clip.meta.height);
+                        let precise = right.as_ref().and_then(|r| {
+                            tracker::stereo::depth_at(
+                                &left,
+                                r,
+                                w,
+                                h,
+                                (x1 + x2) * 0.5,
+                                (y1 + y2) * 0.5,
+                                calib,
+                            )
+                        });
                         balls.push(BallBox {
                             x: x1,
                             y: y1,
                             w: (x2 - x1).max(1.0),
                             h: (y2 - y1).max(1.0),
                             conf: boxes.conf()[b] as f64,
-                            depth_m: median_depth(
-                                &depth,
-                                clip.meta.width,
-                                clip.meta.height,
-                                x1,
-                                y1,
-                                x2,
-                                y2,
-                            ),
+                            depth_m: precise.or_else(|| median_depth(&depth, w, h, x1, y1, x2, y2)),
                         });
                     }
                 }

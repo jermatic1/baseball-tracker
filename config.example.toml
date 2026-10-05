@@ -9,14 +9,22 @@ fps = 100
 exposure_us = 600
 gain = 1600
 
+# Camera beside the plate on the left-field side, looking across it so hits
+# cross the image left to right. Measured: lens 1.74 m from the tee ball,
+# 0.9 m up, the ball 0.65 m left of the camera axis.
 [mount]
-distance_from_plate_m = 2.1
-height_m = 0.8
-lateral_offset_m = 0.5
-pitch_deg = 0.0
-yaw_deg = 0.0
-# true if increasing stereo depth points toward right field
+distance_from_plate_m = 1.74
+height_m = 0.9
+lateral_offset_m = -1.61
+pitch_deg = 30.5
+yaw_deg = 23.0
 positive_depth_is_rf = true
 
 [simulator]
 launch_url = "http://127.0.0.1:7878/launch"
+
+[stereo]
+# The raw eyes are not rectified; this is the disparity they show at
+# infinity. Calibrate from one measured distance: measured disparity minus
+# fx * baseline / distance. 17.1 px on this OAK-D at 640 wide.
+disparity_offset_px = 17.1

@@ -29,11 +29,30 @@ pub struct SimulatorConfig {
     pub launch_url: String,
 }
 
+/// Stereo correction for this rig. The raw eyes are not rectified, so a
+/// fixed horizontal misalignment shows up as extra disparity everywhere.
+/// Calibrate it from one measured distance: offset = measured disparity -
+/// fx * baseline / distance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StereoConfig {
+    pub disparity_offset_px: f64,
+}
+
+impl Default for StereoConfig {
+    fn default() -> Self {
+        Self {
+            disparity_offset_px: 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfig {
     pub capture: CaptureConfig,
     pub mount: MountConfig,
     pub simulator: SimulatorConfig,
+    #[serde(default)]
+    pub stereo: StereoConfig,
 }
 
 impl SessionConfig {
@@ -47,15 +66,18 @@ impl SessionConfig {
                 gain: 1600,
             },
             mount: MountConfig {
-                distance_from_plate_m: 2.1,
-                height_m: 0.8,
-                lateral_offset_m: 0.5,
-                pitch_deg: 0.0,
-                yaw_deg: 0.0,
+                distance_from_plate_m: 1.74,
+                height_m: 0.9,
+                lateral_offset_m: -1.61,
+                pitch_deg: 30.5,
+                yaw_deg: 23.0,
                 positive_depth_is_rf: true,
             },
             simulator: SimulatorConfig {
                 launch_url: "http://127.0.0.1:7878/launch".to_string(),
+            },
+            stereo: StereoConfig {
+                disparity_offset_px: 17.1,
             },
         }
     }
