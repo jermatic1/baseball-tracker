@@ -47,6 +47,11 @@ tasks:
     cmds:
       - cargo run -p cli --release --features oak --quiet -- capture sessions/{{.SESSION}}
 
+  calibrate:
+    desc: Solve the camera pose from the home plate
+    cmds:
+      - cargo run -p cli --release --features oak --quiet -- calibrate sessions/{{.SESSION}}
+
   review:
     desc: Review a session
     cmds:

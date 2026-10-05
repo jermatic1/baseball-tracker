@@ -5,7 +5,9 @@
 <title>capture</title>
 <style>
 body { font: 14px sans-serif; background: #111; color: #eee; margin: 16px; }
-img { background: #000; max-width: 100%; }
+img { background: #000; max-width: 100%; display: block; }
+#view { position: relative; display: inline-block; }
+#overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
 button { margin: 4px 4px 0 0; padding: 6px 10px; }
 .row { margin-top: 12px; }
 #status { margin-top: 8px; min-height: 1.2em; }
@@ -15,7 +17,10 @@ button { margin: 4px 4px 0 0; padding: 6px 10px; }
 <body>
 <h1>Capture</h1>
 <p>Manual exposure. Auto-exposure is off.</p>
-<img id="preview" alt="live preview" width="640">
+<div id="view">
+  <img id="preview" alt="live preview" width="640">
+  <canvas id="overlay" width="640" height="400"></canvas>
+</div>
 <div id="stats">waiting for stats</div>
 <div class="row">
   <button data-act="exposure" data-delta="-100">Exposure −100 µs</button>
@@ -34,7 +39,9 @@ button { margin: 4px 4px 0 0; padding: 6px 10px; }
 <div class="row">
   <button id="record">Record</button>
   <button id="stop" disabled>Stop</button>
+  <button id="calibrate">Calibrate from plate</button>
 </div>
+<p>Calibrate with the plate clear and no ball on it. The detected plate is drawn green, the fitted pose yellow.</p>
 <p>Click Record, walk over and hit, then click Stop.</p>
 <div id="status"></div>
 <script>
@@ -94,6 +101,38 @@ document.getElementById("record").onclick = async () => {
   }
   document.getElementById("record").disabled = true;
   document.getElementById("stop").disabled = false;
+};
+document.getElementById("calibrate").onclick = async () => {
+  const overlay = document.getElementById("overlay");
+  const octx = overlay.getContext("2d");
+  overlay.width = img.naturalWidth || 640;
+  overlay.height = img.naturalHeight || 400;
+  overlay.style.width = img.clientWidth + "px";
+  overlay.style.height = img.clientHeight + "px";
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  const r = await fetch("/api/calibrate", { method: "POST" });
+  const text = await r.text();
+  if (!r.ok) {
+    note = r.status + " " + text;
+    status.textContent = note;
+    return;
+  }
+  const c = JSON.parse(text);
+  const draw = (pts, color) => {
+    octx.strokeStyle = color;
+    octx.lineWidth = 2;
+    octx.beginPath();
+    pts.forEach((p, i) => (i ? octx.lineTo(p[0], p[1]) : octx.moveTo(p[0], p[1])));
+    octx.closePath();
+    octx.stroke();
+  };
+  draw(c.corners, "#0f0");
+  draw(c.reprojected, "#ff0");
+  const m = c.mount;
+  note = `plate fit rms ${c.rms_px.toFixed(2)} px: distance ${m.distance_from_plate_m.toFixed(2)} m, ` +
+    `height ${m.height_m.toFixed(2)} m, lateral ${m.lateral_offset_m.toFixed(2)} m, ` +
+    `yaw ${m.yaw_deg.toFixed(1)}, pitch ${m.pitch_deg.toFixed(1)}. Saved to the session config.`;
+  status.textContent = note;
 };
 document.getElementById("stop").onclick = async () => {
   const button = document.getElementById("stop");

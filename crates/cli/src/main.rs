@@ -1,3 +1,4 @@
+mod calibrate;
 mod capture;
 mod convert;
 #[cfg(feature = "detect")]
@@ -13,6 +14,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use calibrate::calibrate;
 use capture::capture;
 use convert::print_estimate;
 use label::label;
@@ -34,6 +36,10 @@ enum Command {
         demo: bool,
         #[arg(long)]
         once: bool,
+    },
+    /// Solve the camera pose from the home plate and write it to the session.
+    Calibrate {
+        session: PathBuf,
     },
     Review {
         session: PathBuf,
@@ -77,6 +83,7 @@ async fn run() -> Result<(), String> {
             demo,
             once,
         } => capture(session, demo, once).await,
+        Command::Calibrate { session } => calibrate(session),
         Command::Review { session, bind } => review(session, bind).await,
         Command::Label { session, bind } => label(session, bind).await,
         Command::Live { session, replay } => live(session, replay).await,

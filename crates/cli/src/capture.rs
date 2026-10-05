@@ -177,6 +177,7 @@ mod server {
             .route("/", get(index))
             .route("/preview.jpg", get(preview))
             .route("/api/stats", get(stats))
+            .route("/api/calibrate", post(calibrate))
             .route("/api/exposure", post(set_exposure))
             .route("/api/gain", post(set_gain))
             .route("/api/flood", post(set_flood))
@@ -259,6 +260,39 @@ mod server {
     ) -> Result<Json<serde_json::Value>, AppError> {
         let st = state.lock().map_err(|e| e.to_string())?;
         Ok(Json(st.stats.clone().unwrap_or(serde_json::Value::Null)))
+    }
+
+    /// Solve the mount from the plate in the latest frame and save it.
+    async fn calibrate(
+        State(state): State<Arc<Mutex<CaptureState>>>,
+    ) -> Result<Json<serde_json::Value>, AppError> {
+        let mut st = state.lock().map_err(|e| e.to_string())?;
+        let frame = st
+            .latest
+            .clone()
+            .ok_or_else(|| "no frame yet".to_string())?;
+        let Some((corners, fit)) = tracker::plate::calibrate_from_frame(
+            &frame.left,
+            frame.width,
+            frame.height,
+            &st.session.config,
+        ) else {
+            return Err("plate not found: clear the plate and keep the ball off it"
+                .to_string()
+                .into());
+        };
+        st.session.config.mount = fit.mount.clone();
+        st.session
+            .config
+            .save(st.session.dir.join("config.toml"))
+            .map_err(|e| e.to_string())?;
+        crate::calibrate::print_fit(&fit);
+        Ok(Json(serde_json::json!({
+            "corners": corners.px,
+            "reprojected": fit.reprojected,
+            "rms_px": fit.rms_px,
+            "mount": fit.mount,
+        })))
     }
 
     fn stats_json(s: device::CaptureStats, record_drops: u64) -> serde_json::Value {

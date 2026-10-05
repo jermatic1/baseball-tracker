@@ -2,6 +2,7 @@ pub mod config;
 pub mod geom;
 pub mod launch;
 pub mod mot;
+pub mod plate;
 pub mod session;
 pub mod stereo;
 pub mod track;
