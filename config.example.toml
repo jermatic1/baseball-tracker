@@ -28,3 +28,7 @@ launch_url = "http://127.0.0.1:7878/launch"
 # infinity. Calibrate from one measured distance: measured disparity minus
 # fx * baseline / distance. 17.1 px on this OAK-D at 640 wide.
 disparity_offset_px = 17.1
+
+[tracking]
+# Slowest batted ball reported as a hit. Pitches have no floor.
+min_hit_mph = 15.0

@@ -15,7 +15,7 @@ Measures batted baseballs with an OAK-D stereo camera: exit velocity, launch ang
 Each release carries `tracker-jetson-aarch64.zip`, built by GitHub Actions for JetPack 7. On the board:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/tools/jetson-install.sh | bash -s -- <owner>/<repo>
+curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/tools/jetson-install.sh | bash -s -- jermatic1/baseball-tracker
 ```
 
 This installs the runtime libraries and the camera udev rule and unpacks the bundle into `~/tracker`.
