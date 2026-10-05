@@ -1,18 +1,23 @@
 pub mod config;
 pub mod geom;
 pub mod launch;
+pub mod mot;
 pub mod session;
 pub mod stereo;
 pub mod track;
 
 pub use config::{CaptureConfig, MountConfig, SessionConfig, SimulatorConfig};
-pub use geom::{fit_samples, HitEstimate, Intrinsics, Sample};
+pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
 pub use launch::postable;
+pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use session::{
-    write_synth, Clip, ClipMeta, ClipWriter, Detections, HitRecord, Session, StoredFrame,
+    write_synth, Clip, ClipMeta, ClipWriter, Detections, EventKind, HitRecord, Session, StoredFrame,
 };
 pub use stereo::{stereo_calib_from_device, StereoCalib};
-pub use track::{select_hit, BallBox, DetFrame, Track};
+pub use track::{
+    ball_at, motion_segments, select_events, track_balls, tracker_config, Anchor, BallBox,
+    DetFrame, Event, MotionParams, Segment,
+};
 
 use geom::unproject;
 
@@ -30,49 +35,117 @@ pub enum TrackerError {
     Other(String),
 }
 
+/// Every moving-ball event in a clip, fitted as a trajectory.
 pub fn process_clip(
     clip_id: &str,
     frames: &[DetFrame],
     cfg: &SessionConfig,
     intr: &Intrinsics,
-    width: u32,
-    height: u32,
-) -> Option<HitRecord> {
-    let track = select_hit(frames, width, height)?;
-    let mut samples = Vec::new();
-    for (idx, b) in &track.points {
-        let Some(depth) = b.depth_m else {
+) -> Vec<HitRecord> {
+    let params = MotionParams::default();
+    let default_depth = cfg.mount.distance_from_plate_m;
+    let tracks = track_balls(frames, tracker_config(intr.fx, default_depth, &params));
+    let events = select_events(&tracks, frames, intr.fx, default_depth, &params);
+    let mut out = Vec::new();
+    for (segment, ev) in events.iter().enumerate() {
+        let Some(track) = tracks.iter().find(|t| t.id == ev.track_id) else {
             continue;
         };
-        let Some(fr) = frames.iter().find(|f| f.index == *idx) else {
+        let obs = &track.history[ev.segment.start..=ev.segment.end];
+        let depths: Vec<Option<f64>> = obs
+            .iter()
+            .map(|o| ball_at(frames, o.frame, o.tag).and_then(|b| b.depth_m))
+            .collect();
+        let depths = smooth_depths(&depths, ev.median_depth_m);
+        let mut samples = Vec::with_capacity(obs.len() + 1);
+        if let Some(a) = &ev.segment.anchor {
+            let depth = a.depth_m.unwrap_or(ev.median_depth_m);
+            samples.push(sample(a.t_ns, a.cx, a.cy, depth, intr, cfg));
+        }
+        for (o, depth) in obs.iter().zip(depths) {
+            samples.push(sample(o.t_ns, o.cx, o.cy, depth, intr, cfg));
+        }
+        let Some(est) = fit_free_flight(&samples) else {
             continue;
         };
-        let (u, v) = b.centroid();
-        let p = unproject(u, v, depth, intr, &cfg.mount);
-        samples.push(Sample {
-            t_ns: fr.t_ns,
-            x: p[0],
-            y: p[1],
-            z: p[2],
+        let kind = if est.spray_angle_deg.abs() > 90.0 {
+            EventKind::Pitch
+        } else {
+            EventKind::Hit
+        };
+        out.push(HitRecord {
+            clip: clip_id.to_string(),
+            kind,
+            segment,
+            frame_start: obs[0].frame,
+            frame_end: obs[obs.len() - 1].frame,
+            anchored: ev.segment.anchor.is_some(),
+            exit_velocity_mph: est.exit_velocity_mph,
+            launch_angle_deg: est.launch_angle_deg,
+            spray_angle_deg: est.spray_angle_deg,
+            samples: est.samples,
+            confident: est.confident,
+            posted: false,
         });
     }
-    let est = fit_samples(&samples)?;
-    Some(HitRecord {
-        clip: clip_id.to_string(),
-        exit_velocity_mph: est.exit_velocity_mph,
-        launch_angle_deg: est.launch_angle_deg,
-        spray_angle_deg: est.spray_angle_deg,
-        samples: est.samples,
-        confident: est.confident,
-        posted: false,
-    })
+    out
+}
+
+/// Largest residual a sample may have from the fitted flight before the ball
+/// is taken to have hit something (net, floor, bat).
+const FIT_RESIDUAL_M: f64 = 0.25;
+const FIT_SEED: usize = 4;
+
+/// Fit the free-flight prefix: grow the fit one sample at a time and stop at
+/// the first sample that leaves the predicted path.
+fn fit_free_flight(samples: &[Sample]) -> Option<HitEstimate> {
+    let mut ordered = samples.to_vec();
+    ordered.sort_by_key(|s| s.t_ns);
+    let mut n = ordered.len().min(FIT_SEED);
+    let mut traj = fit_trajectory(&ordered[..n])?;
+    while n < ordered.len() {
+        let s = &ordered[n];
+        let p = traj.at(s.t_ns);
+        let residual = ((p[0] - s.x).powi(2) + (p[1] - s.y).powi(2) + (p[2] - s.z).powi(2)).sqrt();
+        if residual > FIT_RESIDUAL_M {
+            break;
+        }
+        n += 1;
+        traj = fit_trajectory(&ordered[..n])?;
+    }
+    traj.estimate(n)
+}
+
+fn sample(t_ns: u64, u: f64, v: f64, depth: f64, intr: &Intrinsics, cfg: &SessionConfig) -> Sample {
+    let p = unproject(u, v, depth, intr, &cfg.mount);
+    Sample {
+        t_ns,
+        x: p[0],
+        y: p[1],
+        z: p[2],
+    }
+}
+
+/// A point keeps its own depth; a gap takes its neighbours' median, then the
+/// segment median.
+fn smooth_depths(depths: &[Option<f64>], fallback: f64) -> Vec<f64> {
+    (0..depths.len())
+        .map(|i| {
+            if let Some(d) = depths[i] {
+                return d;
+            }
+            let lo = i.saturating_sub(1);
+            let hi = (i + 1).min(depths.len() - 1);
+            track::median(depths[lo..=hi].iter().flatten().copied()).unwrap_or(fallback)
+        })
+        .collect()
 }
 
 pub fn recompute_hits(session: &Session) -> Result<Vec<HitRecord>, TrackerError> {
     let prev: std::collections::HashMap<String, bool> = session
         .hits()?
         .into_iter()
-        .map(|h| (h.clip, h.posted))
+        .map(|h| (h.key(), h.posted))
         .collect();
     let mut out = Vec::new();
     for id in session.clip_ids()? {
@@ -84,8 +157,8 @@ pub fn recompute_hits(session: &Session) -> Result<Vec<HitRecord>, TrackerError>
         let w = clip.meta.width;
         let h = clip.meta.height;
         let intr = Intrinsics::from_fov(w, h, 80.0, 55.0);
-        if let Some(mut hit) = process_clip(&id, &dets.frames, &session.config, &intr, w, h) {
-            if prev.get(&id) == Some(&true) {
+        for mut hit in process_clip(&id, &dets.frames, &session.config, &intr) {
+            if prev.get(&hit.key()) == Some(&true) {
                 hit.posted = true;
             }
             out.push(hit);
@@ -139,6 +212,208 @@ mod tests {
         }
     }
 
+    /// Synthetic detections at 640x400 and 100 fps from field-space motion.
+    struct Synth {
+        intr: Intrinsics,
+        cfg: SessionConfig,
+        frames: Vec<DetFrame>,
+    }
+
+    const SYNTH_FPS: f64 = 100.0;
+
+    impl Synth {
+        fn new(n: usize) -> Self {
+            let frames = (0..n)
+                .map(|i| DetFrame {
+                    index: i,
+                    t_ns: (i as f64 / SYNTH_FPS * 1e9).round() as u64,
+                    balls: Vec::new(),
+                })
+                .collect();
+            // A fixed generic placement so the scenes don't follow the rig config.
+            let mut cfg = SessionConfig::example();
+            cfg.mount = MountConfig {
+                distance_from_plate_m: 2.1,
+                height_m: 0.8,
+                lateral_offset_m: 0.5,
+                pitch_deg: 0.0,
+                yaw_deg: 0.0,
+                positive_depth_is_rf: true,
+            };
+            Self {
+                intr: Intrinsics::from_fov(640, 400, 80.0, 55.0),
+                cfg,
+                frames,
+            }
+        }
+
+        fn push(&mut self, i: usize, u: f64, v: f64, depth: f64) {
+            self.frames[i].balls.push(BallBox {
+                x: u - 9.0,
+                y: v - 9.0,
+                w: 18.0,
+                h: 18.0,
+                conf: 0.9,
+                depth_m: Some(depth),
+            });
+        }
+
+        fn static_px(&mut self, cx: f64, cy: f64) {
+            for i in 0..self.frames.len() {
+                self.push(i, cx, cy, 2.5);
+            }
+        }
+
+        /// A ball sitting at `point` with +-`jitter` px of detector wobble.
+        fn rest(&mut self, point: [f64; 3], frames: std::ops::Range<usize>, jitter: f64) {
+            let (u, v, z) = project(point, &self.intr, &self.cfg.mount).unwrap();
+            for i in frames {
+                let j = ((i % 3) as f64 - 1.0) * jitter;
+                self.push(i, u + j, v, z);
+            }
+        }
+
+        /// Ballistic flight from `start` with `vel`, launched at `t0` seconds.
+        fn flight(
+            &mut self,
+            start: [f64; 3],
+            vel: [f64; 3],
+            t0: f64,
+            frames: std::ops::Range<usize>,
+            skip: &[usize],
+        ) {
+            for i in frames {
+                if skip.contains(&i) {
+                    continue;
+                }
+                let t = i as f64 / SYNTH_FPS - t0;
+                let p = field_point(start, vel, t);
+                let (u, v, z) = project(p, &self.intr, &self.cfg.mount).unwrap();
+                self.push(i, u, v, z);
+            }
+        }
+
+        fn records(&self) -> Vec<HitRecord> {
+            process_clip("0001", &self.frames, &self.cfg, &self.intr)
+        }
+    }
+
+    /// Rest point left of the plate; hits travel across the image to the right.
+    const TEE: [f64; 3] = [-0.8, 0.9, 0.0];
+    const HIT_MPH: f64 = 55.0;
+    fn hit_vel() -> [f64; 3] {
+        launch_velocity(HIT_MPH, 10.0, 80.0)
+    }
+
+    #[test]
+    fn tee_hit_with_static_balls() {
+        let mut s = Synth::new(140);
+        s.static_px(80.0, 360.0);
+        s.static_px(560.0, 380.0);
+        s.rest(TEE, 0..130, 1.0);
+        s.flight(TEE, hit_vel(), 129.5 / SYNTH_FPS, 130..140, &[]);
+        let params = MotionParams::default();
+        let tracks = track_balls(
+            &s.frames,
+            tracker_config(s.intr.fx, s.cfg.mount.distance_from_plate_m, &params),
+        );
+        assert_eq!(tracks.len(), 3);
+        let (u, v, _) = project(TEE, &s.intr, &s.cfg.mount).unwrap();
+        let tee = tracks
+            .iter()
+            .find(|t| (t.history[0].cx - u).abs() < 2.0 && (t.history[0].cy - v).abs() < 2.0)
+            .expect("tee track");
+        assert_eq!(tee.history.len(), 140, "flight joined the rest track");
+        let segs = motion_segments(tee, &s.frames, &params);
+        assert_eq!(segs.len(), 2, "{segs:?}");
+        assert!(!segs[0].moving && segs[1].moving);
+        assert_eq!((segs[1].start, segs[1].end), (130, 139));
+        let anchor = segs[1].anchor.expect("anchor");
+        assert!((anchor.cx - u).abs() < 0.5 && (anchor.cy - v).abs() < 0.5);
+        assert!(anchor.t_ns > s.frames[129].t_ns && anchor.t_ns < s.frames[130].t_ns);
+        let recs = s.records();
+        assert_eq!(recs.len(), 1, "{recs:?}");
+        assert_eq!(recs[0].kind, EventKind::Hit);
+        assert!(recs[0].anchored);
+        assert_eq!(recs[0].samples, 11);
+        assert!(
+            (recs[0].exit_velocity_mph - HIT_MPH).abs() < 1.0,
+            "mph {}",
+            recs[0].exit_velocity_mph
+        );
+        assert!((recs[0].launch_angle_deg - 10.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn pitch_only() {
+        let mut s = Synth::new(12);
+        let vel = launch_velocity(45.0, 0.0, -100.0);
+        s.flight([1.2, 1.0, -0.6], vel, 0.0, 0..12, &[]);
+        let recs = s.records();
+        assert_eq!(recs.len(), 1, "{recs:?}");
+        assert_eq!(recs[0].kind, EventKind::Pitch);
+        assert!((recs[0].exit_velocity_mph - 45.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn pitch_then_hit() {
+        let mut s = Synth::new(24);
+        let pitch_vel = launch_velocity(40.0, 0.0, -100.0);
+        let pivot = field_point([1.2, 1.0, -0.6], pitch_vel, 12.0 / SYNTH_FPS);
+        s.flight([1.2, 1.0, -0.6], pitch_vel, 0.0, 0..13, &[]);
+        s.flight(pivot, hit_vel(), 12.0 / SYNTH_FPS, 13..24, &[]);
+        let recs = s.records();
+        assert_eq!(recs.len(), 2, "{recs:?}");
+        assert_eq!(recs[0].kind, EventKind::Pitch);
+        assert_eq!(recs[1].kind, EventKind::Hit);
+        assert!((recs[1].exit_velocity_mph - HIT_MPH).abs() < 1.0);
+    }
+
+    #[test]
+    fn occlusion_after_contact() {
+        let mut s = Synth::new(140);
+        s.rest(TEE, 0..130, 1.0);
+        s.flight(TEE, hit_vel(), 129.5 / SYNTH_FPS, 130..140, &[131, 132]);
+        let recs = s.records();
+        assert_eq!(recs.len(), 1, "{recs:?}");
+        assert!(recs[0].anchored);
+        assert_eq!(recs[0].samples, 9);
+        assert!((recs[0].exit_velocity_mph - HIT_MPH).abs() < 1.0);
+    }
+
+    #[test]
+    fn rest_jitter_is_not_an_event() {
+        let mut s = Synth::new(60);
+        s.rest(TEE, 0..60, 2.0);
+        s.static_px(80.0, 360.0);
+        assert!(s.records().is_empty());
+    }
+
+    #[test]
+    fn select_events_ignores_static_ball() {
+        let w = 640u32;
+        let h = 400u32;
+        let mut frames = Vec::new();
+        for i in 0..6 {
+            let t_ns = i as u64 * 16_666_667;
+            let ground = box_at(80.0, 360.0);
+            let hit = box_at(120.0 + 50.0 * i as f64, 220.0 - 30.0 * i as f64);
+            frames.push(DetFrame {
+                index: i,
+                t_ns,
+                balls: vec![ground, hit],
+            });
+        }
+        let intr = Intrinsics::from_fov(w, h, 80.0, 55.0);
+        let params = MotionParams::default();
+        let tracks = track_balls(&frames, tracker_config(intr.fx, 2.0, &params));
+        assert_eq!(tracks.len(), 2);
+        let events = select_events(&tracks, &frames, intr.fx, 2.0, &params);
+        assert_eq!(events.len(), 1);
+        let moving = tracks.iter().find(|t| t.id == events[0].track_id).unwrap();
+        assert!(moving.history[0].cx > 100.0);
+    }
+
     #[test]
     fn center_field_65_mph() {
         let samples = traj_samples(65.0, 0.0, 0.0, 8, 60.0);
@@ -162,30 +437,6 @@ mod tests {
         let samples = traj_samples(70.0, 10.0, 15.0, 6, 60.0);
         let est = fit_samples(&samples).unwrap();
         assert!(est.spray_angle_deg > 0.0);
-    }
-
-    #[test]
-    fn select_hit_keeps_up_right_fast_ball() {
-        let w = 640u32;
-        let h = 400u32;
-        let mut frames = Vec::new();
-        for i in 0..6 {
-            let t_ns = i as u64 * 16_666_667;
-            let ground = box_at(80.0, 360.0);
-            let pitch = box_at(560.0 - 50.0 * i as f64, 200.0);
-            let hit = box_at(120.0 + 50.0 * i as f64, 220.0 - 30.0 * i as f64);
-            frames.push(DetFrame {
-                index: i,
-                t_ns,
-                balls: vec![ground, pitch, hit],
-            });
-        }
-        let track = select_hit(&frames, w, h).expect("hit track");
-        let first = track.points.first().unwrap().1.centroid();
-        let last = track.points.last().unwrap().1.centroid();
-        assert!(last.0 - first.0 > 20.0);
-        assert!(last.1 - first.1 < -20.0);
-        assert!(first.0 < 200.0);
     }
 
     #[test]
@@ -270,6 +521,11 @@ mod tests {
 
         let hits = vec![HitRecord {
             clip: id.clone(),
+            kind: EventKind::Hit,
+            segment: 0,
+            frame_start: 0,
+            frame_end: 1,
+            anchored: false,
             exit_velocity_mph: 65.0,
             launch_angle_deg: 18.0,
             spray_angle_deg: -12.0,

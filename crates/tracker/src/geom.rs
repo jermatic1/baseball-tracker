@@ -203,7 +203,48 @@ fn fit_line(ts: &[f64], ys: &[f64]) -> Option<(f64, f64)> {
     Some((a, b))
 }
 
-pub fn fit_samples(samples: &[Sample]) -> Option<HitEstimate> {
+/// Free flight under gravity: position `p0` and velocity `v` at `t0_ns`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Trajectory {
+    pub t0_ns: u64,
+    pub p0: [f64; 3],
+    pub v: [f64; 3],
+}
+
+impl Trajectory {
+    pub fn at(&self, t_ns: u64) -> [f64; 3] {
+        let t = (t_ns as f64 - self.t0_ns as f64) / 1e9;
+        [
+            self.p0[0] + self.v[0] * t,
+            self.p0[1] + self.v[1] * t - 0.5 * G * t * t,
+            self.p0[2] + self.v[2] * t,
+        ]
+    }
+
+    pub fn estimate(&self, samples: usize) -> Option<HitEstimate> {
+        let [vx, vy, vz] = self.v;
+        let speed = (vx * vx + vy * vy + vz * vz).sqrt();
+        let exit_velocity_mph = speed / MPS_PER_MPH;
+        let launch_angle_deg = vy.atan2((vx * vx + vz * vz).sqrt()).to_degrees();
+        let spray_angle_deg = vx.atan2(-vz).to_degrees();
+        if ![exit_velocity_mph, launch_angle_deg, spray_angle_deg]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return None;
+        }
+        Some(HitEstimate {
+            exit_velocity_mph,
+            launch_angle_deg,
+            spray_angle_deg,
+            samples,
+            confident: samples >= 4,
+        })
+    }
+}
+
+/// Least-squares fit of x and z against time and of gravity-compensated y.
+pub fn fit_trajectory(samples: &[Sample]) -> Option<Trajectory> {
     if samples.len() < 2 {
         return None;
     }
@@ -218,26 +259,18 @@ pub fn fit_samples(samples: &[Sample]) -> Option<HitEstimate> {
         .zip(&ts)
         .map(|(s, t)| s.y + 0.5 * G * t * t)
         .collect();
-    let (_x0, vx) = fit_line(&ts, &xs)?;
-    let (_z0, vz) = fit_line(&ts, &zs)?;
-    let (_y0, vy) = fit_line(&ts, &ys)?;
-    let speed = (vx * vx + vy * vy + vz * vz).sqrt();
-    let exit_velocity_mph = speed / MPS_PER_MPH;
-    let launch_angle_deg = vy.atan2((vx * vx + vz * vz).sqrt()).to_degrees();
-    let spray_angle_deg = vx.atan2(-vz).to_degrees();
-    if ![exit_velocity_mph, launch_angle_deg, spray_angle_deg]
-        .iter()
-        .all(|v| v.is_finite())
-    {
-        return None;
-    }
-    Some(HitEstimate {
-        exit_velocity_mph,
-        launch_angle_deg,
-        spray_angle_deg,
-        samples: ordered.len(),
-        confident: ordered.len() >= 4,
+    let (x0, vx) = fit_line(&ts, &xs)?;
+    let (z0, vz) = fit_line(&ts, &zs)?;
+    let (y0, vy) = fit_line(&ts, &ys)?;
+    Some(Trajectory {
+        t0_ns: t0,
+        p0: [x0, y0, z0],
+        v: [vx, vy, vz],
     })
+}
+
+pub fn fit_samples(samples: &[Sample]) -> Option<HitEstimate> {
+    fit_trajectory(samples)?.estimate(samples.len())
 }
 
 pub fn launch_velocity(mph: f64, launch_deg: f64, spray_deg: f64) -> [f64; 3] {

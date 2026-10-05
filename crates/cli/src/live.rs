@@ -26,7 +26,7 @@ async fn replay_hits(path: PathBuf) -> Result<(), String> {
     let client = reqwest::Client::new();
     for i in 0..hits.len() {
         print_hit(&hits[i]);
-        if hits[i].posted {
+        if hits[i].posted || hits[i].kind != tracker::EventKind::Hit {
             continue;
         }
         if !hits[i].confident {
@@ -43,12 +43,13 @@ async fn replay_hits(path: PathBuf) -> Result<(), String> {
             "launch_angle_deg": hits[i].launch_angle_deg,
             "spray_angle_deg": hits[i].spray_angle_deg,
         });
-        let resp = client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let resp = match client.post(&url).json(&body).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                eprintln!("{}: simulator unreachable: {e}", hits[i].clip);
+                continue;
+            }
+        };
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
         match status {

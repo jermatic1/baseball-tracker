@@ -56,8 +56,12 @@ pub fn print_estimate(est: &tracker::HitEstimate) {
 
 pub fn print_hit(hit: &tracker::HitRecord) {
     println!(
-        "{} ev={} launch={} spray={} samples={} confident={} posted={}",
+        "{} {} #{} frames {}..{} ev={:.1} launch={:.1} spray={:.1} samples={} confident={} posted={}",
         hit.clip,
+        hit.kind.as_str(),
+        hit.segment,
+        hit.frame_start,
+        hit.frame_end,
         hit.exit_velocity_mph,
         hit.launch_angle_deg,
         hit.spray_angle_deg,

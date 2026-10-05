@@ -40,15 +40,49 @@ pub struct Detections {
     pub frames: Vec<DetFrame>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EventKind {
+    #[default]
+    Hit,
+    Pitch,
+}
+
+impl EventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EventKind::Hit => "hit",
+            EventKind::Pitch => "pitch",
+        }
+    }
+}
+
+/// One moving-ball event. Older files without the event fields still load.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HitRecord {
     pub clip: String,
+    #[serde(default)]
+    pub kind: EventKind,
+    #[serde(default)]
+    pub segment: usize,
+    #[serde(default)]
+    pub frame_start: usize,
+    #[serde(default)]
+    pub frame_end: usize,
+    #[serde(default)]
+    pub anchored: bool,
     pub exit_velocity_mph: f64,
     pub launch_angle_deg: f64,
     pub spray_angle_deg: f64,
     pub samples: usize,
     pub confident: bool,
     pub posted: bool,
+}
+
+impl HitRecord {
+    pub fn key(&self) -> String {
+        format!("{}:{}:{}", self.clip, self.kind.as_str(), self.segment)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +98,18 @@ impl Clip {
         }
         let n = (self.meta.width as usize) * (self.meta.height as usize);
         let mut f = File::open(self.dir.join("left.gray"))?;
+        f.seek(SeekFrom::Start((i * n) as u64))?;
+        let mut buf = vec![0u8; n];
+        f.read_exact(&mut buf)?;
+        Ok(buf)
+    }
+
+    pub fn right_frame(&self, i: usize) -> Result<Vec<u8>, TrackerError> {
+        if i >= self.meta.frame_count {
+            return Err(TrackerError::Other(format!("frame {i} out of range")));
+        }
+        let n = (self.meta.width as usize) * (self.meta.height as usize);
+        let mut f = File::open(self.dir.join("right.gray"))?;
         f.seek(SeekFrom::Start((i * n) as u64))?;
         let mut buf = vec![0u8; n];
         f.read_exact(&mut buf)?;
@@ -511,7 +557,9 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
     let id = session.save_clip(&frames, 1000, 100)?;
     let dets = Detections { frames: det_frames };
     session.save_detections(&id, &dets)?;
-    let rec = process_clip(&id, &dets.frames, &session.config, &intr, w, h)
+    let rec = process_clip(&id, &dets.frames, &session.config, &intr)
+        .into_iter()
+        .find(|r| r.kind == EventKind::Hit)
         .ok_or_else(|| TrackerError::Other("synth clip did not produce a hit".into()))?;
     session.write_hits(std::slice::from_ref(&rec))?;
     Ok(HitEstimate {

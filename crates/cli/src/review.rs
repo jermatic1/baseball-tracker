@@ -79,10 +79,21 @@ async fn clip_api(
         "sequence_gaps": clip.meta.sequence_gaps,
     });
     let detections = st.session.load_detections(&id).ok();
-    let hit = st.hits.iter().find(|h| h.clip == id).map(hit_json);
+    let events: Vec<_> = st
+        .hits
+        .iter()
+        .filter(|h| h.clip == id)
+        .map(hit_json)
+        .collect();
+    let hit = st
+        .hits
+        .iter()
+        .find(|h| h.clip == id && h.kind == tracker::EventKind::Hit)
+        .map(hit_json);
     Ok(Json(serde_json::json!({
         "meta": meta,
         "detections": detections,
+        "events": events,
         "hit": hit,
     })))
 }
@@ -114,6 +125,11 @@ async fn frame_api(
 fn hit_json(hit: &tracker::HitRecord) -> serde_json::Value {
     serde_json::json!({
         "clip": hit.clip,
+        "kind": hit.kind.as_str(),
+        "segment": hit.segment,
+        "frame_start": hit.frame_start,
+        "frame_end": hit.frame_end,
+        "anchored": hit.anchored,
         "exit_velocity_mph": hit.exit_velocity_mph,
         "launch_angle_deg": hit.launch_angle_deg,
         "spray_angle_deg": hit.spray_angle_deg,

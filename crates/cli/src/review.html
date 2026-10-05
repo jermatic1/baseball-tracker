@@ -76,15 +76,16 @@ async function show(index) {
   bmp.close();
 }
 function renderHit() {
-  const h = clip && clip.hit;
-  if (!h) { hitEl.textContent = "no hit"; return; }
-  hitEl.textContent =
-    "exit velocity: " + h.exit_velocity_mph + " mph\n" +
-    "launch angle: " + h.launch_angle_deg + " deg\n" +
-    "spray: " + h.spray_angle_deg + " deg\n" +
-    "samples: " + h.samples + "\n" +
-    "confident: " + h.confident + "\n" +
-    "posted: " + h.posted;
+  const events = (clip && clip.events) || [];
+  if (!events.length) { hitEl.textContent = "no events"; return; }
+  hitEl.textContent = events.map((h) =>
+    h.kind + " #" + h.segment + " frames " + h.frame_start + ".." + h.frame_end +
+    (h.anchored ? " (from rest)" : "") + "\n" +
+    "  speed: " + h.exit_velocity_mph.toFixed(1) + " mph\n" +
+    "  launch angle: " + h.launch_angle_deg.toFixed(1) + " deg\n" +
+    "  spray: " + h.spray_angle_deg.toFixed(1) + " deg\n" +
+    "  samples: " + h.samples + ", confident: " + h.confident + ", posted: " + h.posted
+  ).join("\n");
 }
 async function selectClip(id) {
   playing = false;
