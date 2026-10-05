@@ -1,0 +1,63 @@
+# Build the tracker for the Jetson (aarch64, JetPack 7 = Ubuntu 24.04) on
+# GitHub's arm64 runners. The first run compiles depthai-core and its vcpkg
+# dependencies, which takes about an hour; the cache makes later runs short.
+name: jetson
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang libclang-dev cmake ninja-build pkg-config \
+            python3 autoconf automake autoconf-archive libtool libudev-dev \
+            libssl-dev nasm libdw-dev libelf-dev curl git zip
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache depthai-core and cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.depthai-rs
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: jetson-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: jetson-${{ runner.arch }}-
+
+      - name: Build and bundle
+        env:
+          CARGO_BUILD_JOBS: 3
+          CMAKE_BUILD_PARALLEL_LEVEL: 3
+        run: tools/bundle.sh dist/jetson
+
+      - name: Package
+        run: |
+          echo "built $(git rev-parse --short HEAD)" > dist/jetson/VERSION
+          cd dist && zip -r tracker-jetson-aarch64.zip jetson
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracker-jetson-aarch64
+          path: dist/tracker-jetson-aarch64.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/tracker-jetson-aarch64.zip

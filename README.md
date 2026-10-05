@@ -1,25 +1,57 @@
 # Tracker
 
-A baseball tracker for exit velocity, launch angle, and spray. The POC records clips on a desktop and reviews them there. Pitch metrics and spin are later.
+Tracker measures batted baseballs with a stereo camera over home plate: exit velocity, launch angle, spray angle, and pitch speed. It records each swing, measures it, and posts each hit to a simulator.
+
+## Requirements
+
+- Luxonis OAK-D (RVC2) on a USB 3 port.
+- Linux on x86_64, or a Jetson Orin Nano with JetPack 7.
+- A home plate in view of the camera. A batter's box mat with an integrated plate works.
+- To train the ball detector: a CUDA or ROCm GPU and [`uv`](https://docs.astral.sh/uv/).
+
+## Install
+
+### Jetson
+
+On a Jetson Orin Nano with JetPack 7:
 
 ```bash
-cargo run -p cli -- synth sessions/demo
-cargo run -p cli -- review sessions/demo
-cargo run -p cli -- capture sessions/test-1 --demo
-cargo run -p cli -- live sessions/demo --replay
+curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/tools/jetson-install.sh | bash -s -- <owner>/<repo>
 ```
 
-`review` serves http://127.0.0.1:7879. `live --replay` posts each hit to the simulator at the session's `launch_url` as the full measured record: `kind`, `hit_type`, `exit_velocity_mph`, `launch_angle_deg`, `spray_angle_deg`, `pitch_mph` when a toss was tracked, `contact` (field-frame point and whether it was ground or net), `t_start_ns`, `samples`, and `confident`. The tracker measures; flight, distance, and what-ifs belong to the simulator. Real OAK capture needs `cargo run -p cli --features oak -- capture sessions/test-1`. Detection on saved clips needs `cargo run -p cli --features detect -- detect sessions/test-1`.
+This installs the runtime libraries, the camera udev rule, and the latest release into `~/tracker`.
 
-The capture page shows per-eye fps, sequence gaps, unpaired frames, and record-queue drops, refreshed every second. The OAK-D delivers about 200 frames a second across both eyes regardless of size, so the default is 640x400 at 100 fps, the highest rate with no drops. If the page shows gaps, lower `fps` in the session config.
+### From source
 
-Speeds and angles depend on the camera pose in the session config. With the home plate clear and no ball on it, `task calibrate SESSION=<name>` (or the Calibrate button on the capture page) finds the plate in the image, solves the pose, and writes `[mount]`. Depth uses the camera's own factory stereo calibration, saved into the session at capture; sessions recorded without it fall back to the `[stereo]` disparity offset in the config.
+```bash
+sudo apt install build-essential clang libclang-dev cmake ninja-build pkg-config python3 \
+  autoconf automake autoconf-archive libtool libudev-dev libssl-dev nasm libdw-dev libelf-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+sh -c "$(curl -sL https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
+task release
+```
 
-Stock `sports ball` misses a baseball in these gray frames. Label clicks with `task label`, then `task train` writes `models/ball.onnx`. Detect that model with `--model models/ball.onnx`. `task train` asks uv to install PyTorch for the GPU on this machine. The ROCm or CUDA driver has to already be installed. Training is not part of the tracker binary.
+The first build compiles the camera library and takes a while. The result is `dist/release`: `tracker` for everything but detection, and `tracker-detect` for detection.
 
-The OAK-D shows up as Intel Movidius (`03e7`). Without a udev rule the device node is root-only and capture cannot open it. Do not run capture as root. Install this once, then unplug and replug the camera:
+Install the camera udev rule once and replug the camera, or the device is root-only. Do not run the tracker as root.
 
 ```bash
 echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
+
+## Usage
+
+Everything for one camera setup lives in a session directory under `sessions/`.
+
+1. **Record.** `task capture SESSION=cage-1` serves the camera page on port 7880. Click Record, hit, and click Stop to save a clip.
+2. **Calibrate, once per camera placement.** With the plate clear, click Calibrate on the camera page. The page draws the plate it found.
+3. **Train the detector, once.** `task label SESSION=cage-1` serves a page on port 7881 for clicking the ball in recorded frames, and `task train SESSION=cage-1` writes `models/ball.onnx`.
+4. **Detect and review.** `task detect SESSION=cage-1 MODEL=models/ball.onnx` finds the ball in every clip. `task review SESSION=cage-1` serves a page on port 7879 that plays each clip with detections drawn and lists its events.
+5. **Post.** `task live SESSION=cage-1` posts each hit to the simulator set in the config.
+
+With the prebuilt bundle, run the executables directly, for example `./tracker capture sessions/cage-1`.
+
+## Configuration
+
+`config.toml` in the session directory. `config.example.toml` documents every setting.
