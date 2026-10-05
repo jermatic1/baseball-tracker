@@ -16,7 +16,7 @@ Tracker measures batted baseballs with a stereo camera over home plate: exit vel
 On a Jetson Orin Nano with JetPack 7:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/tools/jetson-install.sh | bash -s -- <owner>/<repo>
+curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/tools/jetson-install.sh | bash -s -- jermatic1/baseball-tracker
 ```
 
 This installs the runtime libraries, the camera udev rule, and the latest release into `~/tracker`.
