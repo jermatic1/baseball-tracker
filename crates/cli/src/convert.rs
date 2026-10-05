@@ -55,16 +55,28 @@ pub fn print_estimate(est: &tracker::HitEstimate) {
 }
 
 pub fn print_hit(hit: &tracker::HitRecord) {
+    let hit_type = hit.hit_type.map(|t| t.as_str()).unwrap_or("-");
+    let pitch = hit
+        .pitch_mph
+        .map(|p| format!("{p:.1}"))
+        .unwrap_or_else(|| "-".into());
+    let contact = hit
+        .contact
+        .map(|c| format!("{:?}", c.kind).to_lowercase())
+        .unwrap_or_else(|| "-".into());
     println!(
-        "{} {} #{} frames {}..{} ev={:.1} launch={:.1} spray={:.1} samples={} confident={} posted={}",
+        "{} {} {} #{} frames {}..{} ev={:.1} pitch={} launch={:.1} spray={:.1} contact={} samples={} confident={} posted={}",
         hit.clip,
         hit.kind.as_str(),
+        hit_type,
         hit.segment,
         hit.frame_start,
         hit.frame_end,
         hit.exit_velocity_mph,
+        pitch,
         hit.launch_angle_deg,
         hit.spray_angle_deg,
+        contact,
         hit.samples,
         hit.confident,
         hit.posted

@@ -79,11 +79,15 @@ function renderHit() {
   const events = (clip && clip.events) || [];
   if (!events.length) { hitEl.textContent = "no events"; return; }
   hitEl.textContent = events.map((h) =>
-    h.kind + " #" + h.segment + " frames " + h.frame_start + ".." + h.frame_end +
-    (h.anchored ? " (from rest)" : "") + "\n" +
-    "  speed: " + h.exit_velocity_mph.toFixed(1) + " mph\n" +
+    h.kind + (h.hit_type ? " (" + h.hit_type.replace("_", " ") + ")" : "") +
+    " #" + h.segment + " frames " + h.frame_start + ".." + h.frame_end +
+    (h.anchored ? " (anchored)" : "") + "\n" +
+    "  speed: " + h.exit_velocity_mph.toFixed(1) + " mph" +
+    (h.pitch_mph != null ? ", pitch " + h.pitch_mph.toFixed(1) + " mph" : "") + "\n" +
     "  launch angle: " + h.launch_angle_deg.toFixed(1) + " deg\n" +
     "  spray: " + h.spray_angle_deg.toFixed(1) + " deg\n" +
+    (h.contact ? "  contact: " + h.contact.kind + " at x " + h.contact.x.toFixed(2) +
+      " y " + h.contact.y.toFixed(2) + " z " + h.contact.z.toFixed(2) + " m\n" : "") +
     "  samples: " + h.samples + ", confident: " + h.confident + ", posted: " + h.posted
   ).join("\n");
 }

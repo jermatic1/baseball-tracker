@@ -123,20 +123,7 @@ async fn frame_api(
 }
 
 fn hit_json(hit: &tracker::HitRecord) -> serde_json::Value {
-    serde_json::json!({
-        "clip": hit.clip,
-        "kind": hit.kind.as_str(),
-        "segment": hit.segment,
-        "frame_start": hit.frame_start,
-        "frame_end": hit.frame_end,
-        "anchored": hit.anchored,
-        "exit_velocity_mph": hit.exit_velocity_mph,
-        "launch_angle_deg": hit.launch_angle_deg,
-        "spray_angle_deg": hit.spray_angle_deg,
-        "samples": hit.samples,
-        "confident": hit.confident,
-        "posted": hit.posted,
-    })
+    serde_json::to_value(hit).unwrap_or(serde_json::Value::Null)
 }
 
 fn cached_clip<'a>(st: &'a mut ReviewState, id: &str) -> Result<&'a tracker::Clip, String> {

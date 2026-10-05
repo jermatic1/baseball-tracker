@@ -46,6 +46,8 @@ pub enum EventKind {
     #[default]
     Hit,
     Pitch,
+    /// Motion after the ball struck the ground or the net.
+    Bounce,
 }
 
 impl EventKind {
@@ -53,8 +55,60 @@ impl EventKind {
         match self {
             EventKind::Hit => "hit",
             EventKind::Pitch => "pitch",
+            EventKind::Bounce => "bounce",
         }
     }
+}
+
+/// Launch-angle band: ground under 10 deg, line drive to 25, fly ball to 50, popup above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HitType {
+    Ground,
+    LineDrive,
+    FlyBall,
+    Popup,
+}
+
+impl HitType {
+    pub fn from_launch_deg(launch: f64) -> Self {
+        if launch < 10.0 {
+            HitType::Ground
+        } else if launch < 25.0 {
+            HitType::LineDrive
+        } else if launch < 50.0 {
+            HitType::FlyBall
+        } else {
+            HitType::Popup
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HitType::Ground => "ground",
+            HitType::LineDrive => "line_drive",
+            HitType::FlyBall => "fly_ball",
+            HitType::Popup => "popup",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactKind {
+    Ground,
+    Net,
+    Unknown,
+}
+
+/// Where the free flight was observed to end, in the field frame.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Contact {
+    pub t_ns: u64,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub kind: ContactKind,
 }
 
 /// One moving-ball event. Older files without the event fields still load.
@@ -71,9 +125,19 @@ pub struct HitRecord {
     pub frame_end: usize,
     #[serde(default)]
     pub anchored: bool,
+    /// Device time the flight began: the contact time for anchored events.
+    #[serde(default)]
+    pub t_start_ns: u64,
     pub exit_velocity_mph: f64,
     pub launch_angle_deg: f64,
     pub spray_angle_deg: f64,
+    /// Speed of the incoming ball when a pitch was tracked before this hit.
+    #[serde(default)]
+    pub pitch_mph: Option<f64>,
+    #[serde(default)]
+    pub hit_type: Option<HitType>,
+    #[serde(default)]
+    pub contact: Option<Contact>,
     pub samples: usize,
     pub confident: bool,
     pub posted: bool,

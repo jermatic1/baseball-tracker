@@ -9,7 +9,7 @@ cargo run -p cli -- capture sessions/test-1 --demo
 cargo run -p cli -- live sessions/demo --replay
 ```
 
-`review` serves http://127.0.0.1:7879. Real OAK capture needs `cargo run -p cli --features oak -- capture sessions/test-1`. Detection on saved clips needs `cargo run -p cli --features detect -- detect sessions/test-1`.
+`review` serves http://127.0.0.1:7879. `live --replay` posts each hit to the simulator at the session's `launch_url` as the full measured record: `kind`, `hit_type`, `exit_velocity_mph`, `launch_angle_deg`, `spray_angle_deg`, `pitch_mph` when a toss was tracked, `contact` (field-frame point and whether it was ground or net), `t_start_ns`, `samples`, and `confident`. The tracker measures; flight, distance, and what-ifs belong to the simulator. Real OAK capture needs `cargo run -p cli --features oak -- capture sessions/test-1`. Detection on saved clips needs `cargo run -p cli --features detect -- detect sessions/test-1`.
 
 The capture page shows per-eye fps, sequence gaps, unpaired frames, and record-queue drops, refreshed every second. The OAK-D delivers about 200 frames a second across both eyes regardless of size, so the default is 640x400 at 100 fps, the highest rate with no drops. If the page shows gaps, lower `fps` in the session config.
 

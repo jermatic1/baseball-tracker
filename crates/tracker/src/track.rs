@@ -32,32 +32,63 @@ pub struct DetFrame {
 pub struct MotionParams {
     /// Below this many ball diameters per second a step counts as rest.
     pub rest_diam_per_s: f64,
-    /// Slowest moving segment that counts as an event, in m/s.
+    /// Noise floor for any moving segment to count as an event, in m/s.
+    /// The hit speed floor is applied later from the session config.
     pub min_event_mps: f64,
     /// Fewest observations a moving segment needs to be an event.
     pub min_points: usize,
     /// Fastest plausible ball, used to size the tracker's jump gate.
     pub max_speed_mps: f64,
+    /// Cosine of the turn between consecutive steps below which the motion
+    /// is a new flight (contact): 0.5 is a turn of more than 60 degrees.
+    pub reversal_cos_max: f64,
+    /// A step slower than this fraction of the previous one is an impact.
+    pub speed_drop_ratio: f64,
+    /// Vertical step, in ball diameters, both sides of a bounce must show.
+    pub bounce_min_diam: f64,
 }
 
 impl Default for MotionParams {
     fn default() -> Self {
         Self {
             rest_diam_per_s: 40.0,
-            min_event_mps: 6.7,
+            min_event_mps: 2.0,
             min_points: 3,
             max_speed_mps: 55.0,
+            reversal_cos_max: 0.5,
+            speed_drop_ratio: 0.6,
+            bounce_min_diam: 0.25,
         }
     }
 }
 
-/// Where a ball sat before it moved, and when it left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorKind {
+    /// The ball sat still here before it moved.
+    Rest,
+    /// The last observation of the incoming flight, where it was struck.
+    Pivot,
+}
+
+/// Where the ball was when its flight began, and when.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Anchor {
     pub cx: f64,
     pub cy: f64,
     pub depth_m: Option<f64>,
     pub t_ns: u64,
+    pub kind: AnchorKind,
+}
+
+/// Why a moving run was cut at the start of a segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitKind {
+    /// Sharp turn: the ball was struck.
+    Reversal,
+    /// Descending then ascending in the image: it bounced.
+    Bounce,
+    /// Sudden loss of speed: it hit something.
+    SpeedDrop,
 }
 
 /// A run of observations in one track, indices into `history`, inclusive.
@@ -67,7 +98,17 @@ pub struct Segment {
     pub end: usize,
     pub moving: bool,
     pub anchor: Option<Anchor>,
-    pub after_reversal: bool,
+    pub after: Option<SplitKind>,
+}
+
+impl Segment {
+    pub fn after_reversal(&self) -> bool {
+        self.after == Some(SplitKind::Reversal)
+    }
+
+    pub fn after_impact(&self) -> bool {
+        matches!(self.after, Some(SplitKind::Bounce | SplitKind::SpeedDrop))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -120,6 +161,15 @@ pub fn ball_at(frames: &[DetFrame], frame: usize, tag: usize) -> Option<&BallBox
     f.balls.get(tag)
 }
 
+struct Step {
+    dx: f64,
+    dy: f64,
+    px_per_s: f64,
+    moving: bool,
+    /// Both observations are from consecutive frames, so the step is clean.
+    consecutive: bool,
+}
+
 pub fn motion_segments(
     track: &TrackedObject,
     frames: &[DetFrame],
@@ -130,54 +180,77 @@ pub fn motion_segments(
         return Vec::new();
     }
     let diam = track.size.max(1.0);
-    let steps: Vec<(f64, f64, bool)> = h
+    let steps: Vec<Step> = h
         .windows(2)
         .map(|w| {
             let dt = secs(w[1].t_ns.saturating_sub(w[0].t_ns)).max(1e-6);
             let dx = w[1].cx - w[0].cx;
             let dy = w[1].cy - w[0].cy;
-            let moving = dx.hypot(dy) / diam / dt > p.rest_diam_per_s;
-            (dx, dy, moving)
+            let px_per_s = dx.hypot(dy) / dt;
+            Step {
+                dx,
+                dy,
+                px_per_s,
+                moving: px_per_s / diam > p.rest_diam_per_s,
+                consecutive: w[1].frame == w[0].frame + 1,
+            }
         })
         .collect();
 
     let mut out: Vec<Segment> = Vec::new();
     let mut start = 0usize;
-    let mut moving = steps.first().map(|s| s.2).unwrap_or(false);
-    let mut after_reversal = false;
-    let close = |out: &mut Vec<Segment>, start: usize, end: usize, moving: bool, rev: bool| {
-        out.push(Segment {
-            start,
-            end,
-            moving,
-            anchor: None,
-            after_reversal: rev,
-        });
+    let mut moving = steps.first().map(|s| s.moving).unwrap_or(false);
+    let mut after: Option<SplitKind> = None;
+    let close = |out: &mut Vec<Segment>, start: usize, end: usize, moving: bool, after| {
+        if end >= start {
+            out.push(Segment {
+                start,
+                end,
+                moving,
+                anchor: None,
+                after,
+            });
+        }
     };
     for (k, step) in steps.iter().enumerate() {
         // Step k joins point k to point k+1.
-        if step.2 != moving {
-            close(&mut out, start, k, moving, after_reversal);
+        if step.moving != moving {
+            close(&mut out, start, k, moving, after);
             start = k + 1;
-            moving = step.2;
-            after_reversal = false;
+            moving = step.moving;
+            after = None;
             continue;
         }
-        if moving && k > 0 && steps[k - 1].2 && k > start {
-            let dot = steps[k - 1].0 * step.0 + steps[k - 1].1 * step.1;
-            if dot < 0.0 {
-                // Reversal at point k; it ends one flight and starts the next.
-                close(&mut out, start, k, true, after_reversal);
-                start = k;
-                after_reversal = true;
-            }
+        if !moving || k == 0 || !steps[k - 1].moving || k <= start {
+            continue;
+        }
+        let prev = &steps[k - 1];
+        if let Some(kind) = split_kind(prev, step, steps.get(k + 1), diam, p) {
+            // Point k is the last of the old flight; the new one starts after it.
+            close(&mut out, start, k, true, after);
+            start = k + 1;
+            after = Some(kind);
         }
     }
-    close(&mut out, start, h.len() - 1, moving, after_reversal);
+    close(&mut out, start, h.len() - 1, moving, after);
 
     for i in 1..out.len() {
         let (prev, seg) = (out[i - 1], out[i]);
-        if !seg.moving || prev.moving {
+        if !seg.moving {
+            continue;
+        }
+        if seg.after == Some(SplitKind::Reversal) {
+            let pivot = h[prev.end];
+            out[i].anchor = Some(Anchor {
+                cx: pivot.cx,
+                cy: pivot.cy,
+                depth_m: ball_at(frames, pivot.frame, pivot.tag).and_then(|b| b.depth_m),
+                t_ns: pivot.t_ns,
+                kind: AnchorKind::Pivot,
+            });
+            continue;
+        }
+        if prev.moving {
             continue;
         }
         let rest = &h[prev.start..=prev.end];
@@ -205,9 +278,40 @@ pub fn motion_segments(
             cy,
             depth_m,
             t_ns,
+            kind: AnchorKind::Rest,
         });
     }
     out
+}
+
+fn split_kind(
+    prev: &Step,
+    step: &Step,
+    next: Option<&Step>,
+    diam: f64,
+    p: &MotionParams,
+) -> Option<SplitKind> {
+    let norm = prev.dx.hypot(prev.dy) * step.dx.hypot(step.dy);
+    if norm <= 0.0 {
+        return None;
+    }
+    let cos = (prev.dx * step.dx + prev.dy * step.dy) / norm;
+    if cos < p.reversal_cos_max {
+        return Some(SplitKind::Reversal);
+    }
+    // Image y grows downward: falling then rising is a bounce. The apex of a
+    // flight is the opposite order and must not split. A bounce between two
+    // frames leaves one mixed step, so the rise may show up one step later.
+    let min_dy = p.bounce_min_diam * diam;
+    let rises_now = step.dy < -min_dy;
+    let rises_next = step.dy.abs() < min_dy && next.is_some_and(|n| n.dy < -min_dy);
+    if prev.dy > min_dy && (rises_now || rises_next) {
+        return Some(SplitKind::Bounce);
+    }
+    if prev.consecutive && step.consecutive && step.px_per_s < p.speed_drop_ratio * prev.px_per_s {
+        return Some(SplitKind::SpeedDrop);
+    }
+    None
 }
 
 pub fn select_events(
@@ -271,4 +375,120 @@ pub fn median(values: impl Iterator<Item = f64>) -> Option<f64> {
     }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     Some(v[v.len() / 2])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mot::Observation;
+
+    const DT: u64 = 10_000_000;
+
+    fn track_from(points: &[(f64, f64)]) -> TrackedObject {
+        let history = points
+            .iter()
+            .enumerate()
+            .map(|(i, &(cx, cy))| Observation {
+                frame: i,
+                t_ns: i as u64 * DT,
+                cx,
+                cy,
+                w: 18.0,
+                h: 18.0,
+                tag: 0,
+            })
+            .collect();
+        TrackedObject {
+            id: 0,
+            history,
+            velocity: (0.0, 0.0),
+            misses: 0,
+            size: 18.0,
+        }
+    }
+
+    /// Five steps one way, then five steps turned by `turn_deg`.
+    fn turned(turn_deg: f64) -> Vec<(f64, f64)> {
+        let mut pts = vec![(100.0, 200.0)];
+        for _ in 0..5 {
+            let (x, y) = *pts.last().unwrap();
+            pts.push((x + 40.0, y));
+        }
+        let (s, c) = turn_deg.to_radians().sin_cos();
+        for _ in 0..5 {
+            let (x, y) = *pts.last().unwrap();
+            pts.push((x + 40.0 * c, y + 40.0 * s));
+        }
+        pts
+    }
+
+    fn kinds(points: &[(f64, f64)]) -> Vec<Option<SplitKind>> {
+        let t = track_from(points);
+        motion_segments(&t, &[], &MotionParams::default())
+            .iter()
+            .map(|s| s.after)
+            .collect()
+    }
+
+    #[test]
+    fn sharp_turns_split_gentle_ones_do_not() {
+        assert_eq!(kinds(&turned(170.0)), vec![None, Some(SplitKind::Reversal)]);
+        assert_eq!(kinds(&turned(100.0)), vec![None, Some(SplitKind::Reversal)]);
+        assert_eq!(kinds(&turned(65.0)), vec![None, Some(SplitKind::Reversal)]);
+        assert_eq!(kinds(&turned(30.0)), vec![None]);
+    }
+
+    #[test]
+    fn speed_drop_splits() {
+        let mut pts = vec![(100.0, 200.0)];
+        for _ in 0..5 {
+            let (x, y) = *pts.last().unwrap();
+            pts.push((x + 40.0, y));
+        }
+        for _ in 0..5 {
+            let (x, y) = *pts.last().unwrap();
+            pts.push((x + 15.0, y));
+        }
+        assert_eq!(kinds(&pts), vec![None, Some(SplitKind::SpeedDrop)]);
+    }
+
+    #[test]
+    fn bounce_splits_but_apex_does_not() {
+        let falling_then_rising: Vec<(f64, f64)> = (0..12)
+            .map(|i| {
+                let x = 100.0 + 40.0 * i as f64;
+                let y = if i <= 6 {
+                    100.0 + 12.0 * i as f64
+                } else {
+                    172.0 - 12.0 * (i - 6) as f64
+                };
+                (x, y)
+            })
+            .collect();
+        assert_eq!(
+            kinds(&falling_then_rising),
+            vec![None, Some(SplitKind::Bounce)]
+        );
+        let rising_then_falling: Vec<(f64, f64)> = falling_then_rising
+            .iter()
+            .map(|&(x, y)| (x, 300.0 - y))
+            .collect();
+        assert_eq!(kinds(&rising_then_falling), vec![None]);
+    }
+
+    #[test]
+    fn pivot_anchor_after_reversal() {
+        let t = track_from(&turned(170.0));
+        let segs = motion_segments(&t, &[], &MotionParams::default());
+        let anchor = segs[1].anchor.expect("pivot");
+        assert_eq!(anchor.kind, AnchorKind::Pivot);
+        assert_eq!((anchor.cx, anchor.cy), t.history[5].cx_cy());
+        assert_eq!(segs[1].start, 6);
+    }
+
+    impl Observation {
+        fn cx_cy(&self) -> (f64, f64) {
+            (self.cx, self.cy)
+        }
+    }
 }

@@ -11,12 +11,13 @@ pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Tra
 pub use launch::postable;
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use session::{
-    write_synth, Clip, ClipMeta, ClipWriter, Detections, EventKind, HitRecord, Session, StoredFrame,
+    write_synth, Clip, ClipMeta, ClipWriter, Contact, ContactKind, Detections, EventKind,
+    HitRecord, HitType, Session, StoredFrame,
 };
 pub use stereo::{stereo_calib_from_device, StereoCalib};
 pub use track::{
-    ball_at, motion_segments, select_events, track_balls, tracker_config, Anchor, BallBox,
-    DetFrame, Event, MotionParams, Segment,
+    ball_at, motion_segments, select_events, track_balls, tracker_config, Anchor, AnchorKind,
+    BallBox, DetFrame, Event, MotionParams, Segment, SplitKind,
 };
 
 use geom::unproject;
@@ -46,8 +47,9 @@ pub fn process_clip(
     let default_depth = cfg.mount.distance_from_plate_m;
     let tracks = track_balls(frames, tracker_config(intr.fx, default_depth, &params));
     let events = select_events(&tracks, frames, intr.fx, default_depth, &params);
+    let mut last_pitch_mph: std::collections::HashMap<u32, f64> = Default::default();
     let mut out = Vec::new();
-    for (segment, ev) in events.iter().enumerate() {
+    for ev in &events {
         let Some(track) = tracks.iter().find(|t| t.id == ev.track_id) else {
             continue;
         };
@@ -65,24 +67,61 @@ pub fn process_clip(
         for (o, depth) in obs.iter().zip(depths) {
             samples.push(sample(o.t_ns, o.cx, o.cy, depth, intr, cfg));
         }
-        let Some(est) = fit_free_flight(&samples) else {
+        let Some((traj, used)) = fit_free_flight(&samples) else {
             continue;
         };
-        let kind = if est.spray_angle_deg.abs() > 90.0 {
+        let Some(est) = traj.estimate(used) else {
+            continue;
+        };
+        let kind = if ev.segment.after_impact() {
+            EventKind::Bounce
+        } else if est.spray_angle_deg.abs() > 90.0 {
             EventKind::Pitch
         } else {
             EventKind::Hit
         };
+        if kind == EventKind::Pitch {
+            last_pitch_mph.insert(ev.track_id, est.exit_velocity_mph);
+        }
+        if kind == EventKind::Hit && est.exit_velocity_mph < cfg.tracking.min_hit_mph {
+            continue;
+        }
+        let pivot = matches!(
+            ev.segment.anchor,
+            Some(Anchor {
+                kind: AnchorKind::Pivot,
+                ..
+            })
+        );
+        let pitch_mph = if kind == EventKind::Hit && pivot {
+            last_pitch_mph.get(&ev.track_id).copied()
+        } else {
+            None
+        };
+        // A sample the fit rejected is where the flight ended; the next
+        // segment starting with an impact says the same when all fit.
+        let impact_next = motion_segments(track, frames, &params)
+            .iter()
+            .any(|s| s.start == ev.segment.end + 1 && s.after_impact());
+        let contact = samples
+            .get(used)
+            .or_else(|| impact_next.then(|| samples.last()).flatten())
+            .map(|s| contact_at(&traj, s.t_ns));
         out.push(HitRecord {
             clip: clip_id.to_string(),
             kind,
-            segment,
+            segment: out.len(),
             frame_start: obs[0].frame,
             frame_end: obs[obs.len() - 1].frame,
             anchored: ev.segment.anchor.is_some(),
+            t_start_ns: samples[0].t_ns,
             exit_velocity_mph: est.exit_velocity_mph,
             launch_angle_deg: est.launch_angle_deg,
             spray_angle_deg: est.spray_angle_deg,
+            pitch_mph,
+            hit_type: (kind == EventKind::Hit)
+                .then(|| HitType::from_launch_deg(est.launch_angle_deg)),
+            contact,
             samples: est.samples,
             confident: est.confident,
             posted: false,
@@ -91,14 +130,38 @@ pub fn process_clip(
     out
 }
 
+/// Half a ball above the floor still counts as the floor; well above it is
+/// the net or something else in the cage.
+const CONTACT_GROUND_M: f64 = 0.1;
+const CONTACT_NET_M: f64 = 0.3;
+
+fn contact_at(traj: &Trajectory, t_ns: u64) -> Contact {
+    let [x, y, z] = traj.at(t_ns);
+    let kind = if y < CONTACT_GROUND_M {
+        ContactKind::Ground
+    } else if y > CONTACT_NET_M {
+        ContactKind::Net
+    } else {
+        ContactKind::Unknown
+    };
+    Contact {
+        t_ns,
+        x,
+        y,
+        z,
+        kind,
+    }
+}
+
 /// Largest residual a sample may have from the fitted flight before the ball
 /// is taken to have hit something (net, floor, bat).
 const FIT_RESIDUAL_M: f64 = 0.25;
 const FIT_SEED: usize = 4;
 
 /// Fit the free-flight prefix: grow the fit one sample at a time and stop at
-/// the first sample that leaves the predicted path.
-fn fit_free_flight(samples: &[Sample]) -> Option<HitEstimate> {
+/// the first sample that leaves the predicted path. Returns the fit and how
+/// many samples it used.
+fn fit_free_flight(samples: &[Sample]) -> Option<(Trajectory, usize)> {
     let mut ordered = samples.to_vec();
     ordered.sort_by_key(|s| s.t_ns);
     let mut n = ordered.len().min(FIT_SEED);
@@ -113,7 +176,7 @@ fn fit_free_flight(samples: &[Sample]) -> Option<HitEstimate> {
         n += 1;
         traj = fit_trajectory(&ordered[..n])?;
     }
-    traj.estimate(n)
+    Some((traj, n))
 }
 
 fn sample(t_ns: u64, u: f64, v: f64, depth: f64, intr: &Intrinsics, cfg: &SessionConfig) -> Sample {
@@ -370,6 +433,82 @@ mod tests {
     }
 
     #[test]
+    fn front_toss_at_an_angle_then_hit() {
+        let mut s = Synth::new(30);
+        // A slow toss arriving 40 degrees off the hit line, struck at frame 12.
+        let toss_vel = launch_velocity(12.0, 0.0, -140.0);
+        let toss_start = [1.0, 1.0, -0.4];
+        let pivot = field_point(toss_start, toss_vel, 12.0 / SYNTH_FPS);
+        let hit = launch_velocity(HIT_MPH, 15.0, 80.0);
+        s.flight(toss_start, toss_vel, 0.0, 0..13, &[]);
+        s.flight(pivot, hit, 12.0 / SYNTH_FPS, 13..30, &[]);
+        let recs = s.records();
+        assert_eq!(recs.len(), 2, "{recs:?}");
+        assert_eq!(recs[0].kind, EventKind::Pitch);
+        assert!((recs[0].exit_velocity_mph - 12.0).abs() < 1.0);
+        let hit = &recs[1];
+        assert_eq!(hit.kind, EventKind::Hit);
+        assert!(hit.anchored);
+        assert!((hit.pitch_mph.unwrap() - 12.0).abs() < 1.0);
+        assert!(
+            (hit.exit_velocity_mph - HIT_MPH).abs() < 1.0,
+            "{}",
+            hit.exit_velocity_mph
+        );
+        assert_eq!(hit.hit_type, Some(HitType::LineDrive));
+    }
+
+    #[test]
+    fn slow_toss_alone_is_a_pitch_not_a_hit() {
+        let mut s = Synth::new(20);
+        s.flight(
+            [1.0, 1.0, -0.4],
+            launch_velocity(8.0, 0.0, -140.0),
+            0.0,
+            0..20,
+            &[],
+        );
+        let recs = s.records();
+        assert_eq!(recs.len(), 1, "{recs:?}");
+        assert_eq!(recs[0].kind, EventKind::Pitch);
+    }
+
+    #[test]
+    fn ground_ball_bounce() {
+        let mut s = Synth::new(80);
+        s.rest(TEE, 0..30, 1.0);
+        let vel = launch_velocity(45.0, -10.0, 80.0);
+        // Time to the floor from the tee height: 0 = y0 + vy t - g t^2 / 2.
+        let g = 9.80665;
+        let t_floor = (vel[1] + (vel[1] * vel[1] + 2.0 * g * TEE[1]).sqrt()) / g;
+        let t0 = 29.5 / SYNTH_FPS;
+        let first_bounce_frame = ((t0 + t_floor) * SYNTH_FPS).ceil() as usize;
+        s.flight(TEE, vel, t0, 30..first_bounce_frame, &[]);
+        let land = field_point(TEE, vel, t_floor);
+        let vy_at_floor = vel[1] - g * t_floor;
+        let bounce_vel = [vel[0] * 0.8, -vy_at_floor * 0.6, vel[2] * 0.8];
+        s.flight(
+            [land[0], 0.0, land[2]],
+            bounce_vel,
+            t0 + t_floor,
+            first_bounce_frame..80,
+            &[],
+        );
+        let recs = s.records();
+        let hits: Vec<_> = recs.iter().filter(|r| r.kind == EventKind::Hit).collect();
+        assert_eq!(hits.len(), 1, "{recs:?}");
+        assert_eq!(hits[0].hit_type, Some(HitType::Ground));
+        let contact = hits[0].contact.expect("contact");
+        assert_eq!(contact.kind, ContactKind::Ground, "{contact:?}");
+        assert!(
+            (hits[0].exit_velocity_mph - 45.0).abs() < 1.5,
+            "{}",
+            hits[0].exit_velocity_mph
+        );
+        assert!(recs.iter().any(|r| r.kind == EventKind::Bounce), "{recs:?}");
+    }
+
+    #[test]
     fn occlusion_after_contact() {
         let mut s = Synth::new(140);
         s.rest(TEE, 0..130, 1.0);
@@ -526,9 +665,13 @@ mod tests {
             frame_start: 0,
             frame_end: 1,
             anchored: false,
+            t_start_ns: 0,
             exit_velocity_mph: 65.0,
             launch_angle_deg: 18.0,
             spray_angle_deg: -12.0,
+            pitch_mph: None,
+            hit_type: Some(HitType::LineDrive),
+            contact: None,
             samples: 8,
             confident: true,
             posted: true,

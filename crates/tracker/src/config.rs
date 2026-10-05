@@ -29,6 +29,19 @@ pub struct SimulatorConfig {
     pub launch_url: String,
 }
 
+/// Event selection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackingConfig {
+    /// Slowest batted ball reported as a hit. Pitches have no floor.
+    pub min_hit_mph: f64,
+}
+
+impl Default for TrackingConfig {
+    fn default() -> Self {
+        Self { min_hit_mph: 15.0 }
+    }
+}
+
 /// Stereo correction for this rig. The raw eyes are not rectified, so a
 /// fixed horizontal misalignment shows up as extra disparity everywhere.
 /// Calibrate it from one measured distance: offset = measured disparity -
@@ -53,6 +66,8 @@ pub struct SessionConfig {
     pub simulator: SimulatorConfig,
     #[serde(default)]
     pub stereo: StereoConfig,
+    #[serde(default)]
+    pub tracking: TrackingConfig,
 }
 
 impl SessionConfig {
@@ -79,6 +94,7 @@ impl SessionConfig {
             stereo: StereoConfig {
                 disparity_offset_px: 17.1,
             },
+            tracking: TrackingConfig::default(),
         }
     }
 

@@ -38,11 +38,9 @@ async fn replay_hits(path: PathBuf) -> Result<(), String> {
             eprintln!("{}: {reason}", hits[i].clip);
             continue;
         }
-        let body = serde_json::json!({
-            "exit_velocity_mph": hits[i].exit_velocity_mph,
-            "launch_angle_deg": hits[i].launch_angle_deg,
-            "spray_angle_deg": hits[i].spray_angle_deg,
-        });
+        // The full measured record is the contract; the simulator predicts
+        // flight, distance, and what-ifs from it.
+        let body = serde_json::to_value(&hits[i]).map_err(|e| e.to_string())?;
         let resp = match client.post(&url).json(&body).send().await {
             Ok(resp) => resp,
             Err(e) => {
