@@ -52,6 +52,11 @@ tasks:
     cmds:
       - cargo run -p cli --release --features oak --quiet -- calibrate sessions/{{.SESSION}}
 
+  live:
+    desc: Recompute events and post hits to the simulator
+    cmds:
+      - cargo run -p cli --quiet -- live sessions/{{.SESSION}} --replay
+
   review:
     desc: Review a session
     cmds:
@@ -85,11 +90,7 @@ tasks:
       - cargo run -p cli --release --features oak --quiet -- capture sessions/{{.SESSION}} --once
 
   release:
-    desc: Release build for this machine
+    desc: Check, then build the capture and detect executables into dist/release
     cmds:
       - task: check
-      - cargo build -p cli --release --features oak
-      - mkdir -p dist/release
-      - rm -rf dist/release/tracker dist/release/*.so dist/release/*.so.*
-      - cp target/release/tracker dist/release/tracker
-      - cp -a target/release/libavcodec.so* target/release/libavformat.so* target/release/libavutil.so* target/release/libavfilter.so* target/release/libavdevice.so* target/release/libswscale.so* target/release/libswresample.so* target/release/libusb-1.0.so* target/release/libdynamic_calibration.so* dist/release/
+      - tools/bundle.sh dist/release
