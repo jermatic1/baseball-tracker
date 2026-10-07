@@ -93,33 +93,57 @@ fn capture_once(path: PathBuf) -> Result<(), String> {
 #[cfg(feature = "oak")]
 async fn capture_oak(path: PathBuf) -> Result<(), String> {
     let session = tracker::Session::create(&path).map_err(|e| e.to_string())?;
-    let width = session.config.capture.width;
-    let height = session.config.capture.height;
-    let fps = session.config.capture.fps as f32;
     let exposure_us = session.config.capture.exposure_us;
     let gain = session.config.capture.gain;
-    let cam = device::OakCamera::open(width, height, fps.max(1.0), exposure_us, gain)?;
+    let (cam, calib) = open_oak(&session)?;
+    server::run(session, cam, exposure_us, gain, calib, None).await
+}
+
+/// Open the OAK at the session's capture settings and save its calibration
+/// into the session.
+#[cfg(feature = "oak")]
+pub(crate) fn open_oak(
+    session: &tracker::Session,
+) -> Result<(device::OakCamera, tracker::StereoCalib), String> {
+    let c = &session.config.capture;
+    let cam = device::OakCamera::open(
+        c.width,
+        c.height,
+        (c.fps as f32).max(1.0),
+        c.exposure_us,
+        c.gain,
+    )?;
     let device_calib = cam.calibration_json();
     if let Some(json) = &device_calib {
         let _ = std::fs::write(session.dir.join("calibration.json"), json);
     }
-    match session.rectifier(width, height) {
+    let calib = stereo_calib(session, device_calib.as_deref());
+    Ok((cam, calib))
+}
+
+/// Stereo geometry for point depth: the device calibration when the session
+/// has one, else the nominal rig with the configured disparity offset.
+pub(crate) fn stereo_calib(
+    session: &tracker::Session,
+    device_json: Option<&str>,
+) -> tracker::StereoCalib {
+    let c = &session.config.capture;
+    match session.rectifier(c.width, c.height) {
         Some(_) => println!("stereo rectification from device calibration"),
         None => println!("no device calibration; using the disparity offset from config"),
     }
-    let calib = tracker::stereo_calib_from_device(device_calib.as_deref(), width)
+    let calib = tracker::stereo_calib_from_device(device_json, c.width)
         .with_offset(session.config.stereo.disparity_offset_px);
     println!(
         "stereo fx {:.1} baseline {:.3} m, disparity offset {:.1} px",
         calib.fx, calib.baseline_m, calib.disparity_offset_px
     );
-    server::run(session, cam, exposure_us, gain, calib).await
+    calib
 }
 
-#[cfg(feature = "oak")]
-mod server {
+pub(crate) mod server {
     use std::net::SocketAddr;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -139,6 +163,26 @@ mod server {
     const BIND: &str = "0.0.0.0:7880";
     const RECORD_QUEUE: usize = 32;
 
+    /// What a live watcher plugs into the capture loop: every frame goes
+    /// down `frames` in order, and the page reads `status`.
+    pub struct LiveTap {
+        pub frames: SyncSender<Arc<tracker::StoredFrame>>,
+        pub sent: Arc<AtomicU64>,
+        pub drops: Arc<AtomicU64>,
+        pub status: Arc<Mutex<LiveStatus>>,
+    }
+
+    #[derive(Debug, Clone, Default, serde::Serialize)]
+    pub struct LiveStatus {
+        pub state: String,
+        pub provider: String,
+        pub fps: f64,
+        pub lag: u64,
+        pub clips: u64,
+        pub last_event: String,
+        pub boxes: Vec<[f64; 4]>,
+    }
+
     struct CaptureState {
         latest: Option<Arc<tracker::StoredFrame>>,
         jpeg: Option<(Instant, Vec<u8>)>,
@@ -152,15 +196,19 @@ mod server {
         record_tx: Option<SyncSender<Option<Arc<tracker::StoredFrame>>>>,
         record_drops: Arc<AtomicU64>,
         record_done: Option<Receiver<Result<String, String>>>,
+        live: Option<LiveTap>,
+        stop: Arc<AtomicBool>,
     }
 
-    pub async fn run(
+    pub async fn run<C: Camera + Send + 'static>(
         session: tracker::Session,
-        cam: device::OakCamera,
+        cam: C,
         exposure_us: u32,
         gain: u32,
         calib: tracker::StereoCalib,
+        live: Option<LiveTap>,
     ) -> Result<(), String> {
+        let stopping = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Mutex::new(CaptureState {
             latest: None,
             jpeg: None,
@@ -174,6 +222,8 @@ mod server {
             record_tx: None,
             record_drops: Arc::new(AtomicU64::new(0)),
             record_done: None,
+            live,
+            stop: Arc::clone(&stopping),
         }));
         let poll_state = Arc::clone(&state);
         std::thread::spawn(move || poll_loop(cam, poll_state));
@@ -189,7 +239,7 @@ mod server {
             .route("/api/fps", post(set_fps))
             .route("/api/record", post(record))
             .route("/api/stop", post(stop))
-            .with_state(state);
+            .with_state(Arc::clone(&state));
         let addr: SocketAddr = BIND
             .parse()
             .map_err(|e: std::net::AddrParseError| e.to_string())?;
@@ -197,15 +247,42 @@ mod server {
             .await
             .map_err(|e| e.to_string())?;
         println!("http://{BIND}");
-        axum::serve(listener, app).await.map_err(|e| e.to_string())
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+                println!("stopping");
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        stopping.store(true, Ordering::Relaxed);
+        // Finish a manual clip and hand the live watcher its last frame.
+        let (done, _tap) = {
+            let mut st = state.lock().map_err(|e| e.to_string())?;
+            st.record_tx.take();
+            (st.record_done.take(), st.live.take())
+        };
+        if let Some(done) = done {
+            let _ = tokio::task::spawn_blocking(move || done.recv()).await;
+        }
+        Ok(())
     }
 
-    fn poll_loop(mut cam: device::OakCamera, state: Arc<Mutex<CaptureState>>) {
-        let record_drops = match state.lock() {
-            Ok(st) => Arc::clone(&st.record_drops),
+    fn poll_loop<C: Camera>(mut cam: C, state: Arc<Mutex<CaptureState>>) {
+        let (record_drops, stop, live) = match state.lock() {
+            Ok(st) => (
+                Arc::clone(&st.record_drops),
+                Arc::clone(&st.stop),
+                st.live.as_ref().map(|tap| {
+                    (
+                        tap.frames.clone(),
+                        Arc::clone(&tap.sent),
+                        Arc::clone(&tap.drops),
+                    )
+                }),
+            ),
             Err(_) => return,
         };
-        loop {
+        while !stop.load(Ordering::Relaxed) {
             if let Some(stats) = cam.take_stats() {
                 let drops = record_drops.swap(0, Ordering::Relaxed);
                 if let Ok(mut st) = state.lock() {
@@ -238,9 +315,15 @@ mod server {
                     st.latest = Some(Arc::clone(&stored));
                     drop(st);
                     if let Some(tx) = tx {
-                        if tx.try_send(Some(stored)).is_err() {
+                        if tx.try_send(Some(Arc::clone(&stored))).is_err() {
                             record_drops.fetch_add(1, Ordering::Relaxed);
                         }
+                    }
+                    if let Some((tx, sent, drops)) = &live {
+                        match tx.try_send(stored) {
+                            Ok(()) => sent.fetch_add(1, Ordering::Relaxed),
+                            Err(_) => drops.fetch_add(1, Ordering::Relaxed),
+                        };
                     }
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(1)),
@@ -263,7 +346,17 @@ mod server {
         State(state): State<Arc<Mutex<CaptureState>>>,
     ) -> Result<Json<serde_json::Value>, AppError> {
         let st = state.lock().map_err(|e| e.to_string())?;
-        Ok(Json(st.stats.clone().unwrap_or(serde_json::Value::Null)))
+        let mut stats = st.stats.clone().unwrap_or_else(|| serde_json::json!({}));
+        if let Some(tap) = &st.live {
+            let mut live = tap
+                .status
+                .lock()
+                .map(|s| serde_json::to_value(&*s).unwrap_or_default())
+                .unwrap_or_default();
+            live["drops"] = tap.drops.load(Ordering::Relaxed).into();
+            stats["live"] = live;
+        }
+        Ok(Json(stats))
     }
 
     /// Solve the mount from the plate in the latest frame and save it.

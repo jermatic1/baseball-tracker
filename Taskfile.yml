@@ -29,6 +29,17 @@ tasks:
     cmds:
       - cargo clippy --workspace --all-targets -- -D warnings
       - cargo clippy --workspace --all-targets --features oak -- -D warnings
+      - cargo clippy -p cli --all-targets --features oak,load-dynamic -- -D warnings
+
+  run:
+    desc: Live session; detects, measures, and posts every hit and throw
+    cmds:
+      - cargo run -p cli --release --features oak --quiet -- watch sessions/{{.SESSION}}
+
+  replay:
+    desc: Run a recorded session through the live path without the camera
+    cmds:
+      - cargo run -p cli --release --quiet -- watch sessions/{{.SESSION}}-replay --from sessions/{{.SESSION}}
 
   check:
     desc: Format, lint, and test
@@ -53,9 +64,9 @@ tasks:
       - cargo run -p cli --release --features oak --quiet -- calibrate sessions/{{.SESSION}}
 
   live:
-    desc: Recompute events and post hits to the simulator
+    desc: Recompute events from saved detections and post hits to the simulator
     cmds:
-      - cargo run -p cli --quiet -- live sessions/{{.SESSION}} --replay
+      - cargo run -p cli --release --quiet -- live sessions/{{.SESSION}} --replay
 
   review:
     desc: Review a session
@@ -82,7 +93,7 @@ tasks:
   detect:
     desc: Detect balls in a saved session
     cmds:
-      - cargo run -p cli --features detect --quiet -- detect sessions/{{.SESSION}} --model {{.MODEL | default "models/ball.onnx"}} {{if .CLIP}}--clip {{.CLIP}}{{end}}
+      - cargo run -p cli --release --quiet -- detect sessions/{{.SESSION}} --model {{.MODEL | default "models/ball.onnx"}} {{if .CLIP}}--clip {{.CLIP}}{{end}}
 
   camera:
     desc: Open the OAK and write one frame
@@ -90,7 +101,7 @@ tasks:
       - cargo run -p cli --release --features oak --quiet -- capture sessions/{{.SESSION}} --once
 
   release:
-    desc: Check, then build the capture and detect executables into dist/release
+    desc: Check, then build the tracker executable into dist/release
     cmds:
       - task: check
       - tools/bundle.sh dist/release

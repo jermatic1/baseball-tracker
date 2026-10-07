@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 MAX_GAP = 12
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 400
 
 
 def interpolate(marks):
@@ -153,9 +155,12 @@ def best_weights(session, trainer=None):
 
 
 def export_onnx(best, imgsz):
+    """Export at the frame's own shape: height rounded up to the stride, so a
+    640x400 frame is padded by a few rows and never scaled."""
     from ultralytics import YOLO
 
-    exported = YOLO(str(best)).export(format="onnx", imgsz=imgsz)
+    height = -(-FRAME_HEIGHT // 32) * 32 if imgsz == FRAME_WIDTH else imgsz
+    exported = YOLO(str(best)).export(format="onnx", imgsz=[height, imgsz])
     out = Path("models")
     out.mkdir(exist_ok=True)
     dest = out / "ball.onnx"
@@ -169,7 +174,7 @@ def main():
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--export-only", action="store_true")
     parser.add_argument("--epochs", type=int, default=40)
-    parser.add_argument("--imgsz", type=int, default=1280)
+    parser.add_argument("--imgsz", type=int, default=FRAME_WIDTH)
     args = parser.parse_args()
     if args.self_test:
         self_test()

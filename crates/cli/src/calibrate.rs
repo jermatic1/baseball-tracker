@@ -59,7 +59,6 @@ pub fn calibrate(path: PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(feature = "oak")]
 pub fn print_fit(fit: &tracker::plate::PoseFit) {
     let m = &fit.mount;
     println!(

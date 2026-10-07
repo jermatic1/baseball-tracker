@@ -32,3 +32,14 @@ disparity_offset_px = 17.1
 [tracking]
 # Slowest batted ball reported as a hit. Pitches have no floor.
 min_hit_mph = 15.0
+
+# Live watching. A detected ball that lands farther than move_px from every
+# ball seen in the last tenth of a second has moved; the frames from preroll_s
+# before that until settle_s after the last motion become a clip and are
+# measured at once. keep_clips = false keeps only detections and events.
+[watch]
+move_px = 4.0
+preroll_s = 0.5
+settle_s = 0.15
+max_episode_s = 6.0
+keep_clips = true

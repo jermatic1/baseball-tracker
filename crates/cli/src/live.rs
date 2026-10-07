@@ -4,28 +4,28 @@ use crate::convert::{print_hit, to_estimate};
 
 pub async fn live(path: PathBuf, replay: bool) -> Result<(), String> {
     if !replay {
-        #[cfg(not(feature = "oak"))]
-        {
-            eprintln!("rebuild with --features oak");
-            std::process::exit(1);
-        }
-        #[cfg(feature = "oak")]
-        {
-            let _ = path;
-            return Err("live camera loop is not implemented; pass --replay".into());
-        }
+        return Err(
+            "pass --replay to recompute and post saved clips; `tracker watch` runs a live session"
+                .into(),
+        );
     }
-    replay_hits(path).await
-}
-
-async fn replay_hits(path: PathBuf) -> Result<(), String> {
     let session = tracker::Session::open(&path).map_err(|e| e.to_string())?;
     let mut hits = tracker::recompute_hits(&session).map_err(|e| e.to_string())?;
-    session.write_hits(&hits).map_err(|e| e.to_string())?;
-    let url = session.config.simulator.launch_url.to_string();
-    let client = reqwest::Client::new();
+    for hit in &hits {
+        print_hit(hit);
+    }
+    post_hits(&session, &mut hits, &reqwest::Client::new()).await
+}
+
+/// Post every confident, unposted hit to the simulator and mark it posted in
+/// the session's hit list as each one is accepted.
+pub async fn post_hits(
+    session: &tracker::Session,
+    hits: &mut [tracker::HitRecord],
+    client: &reqwest::Client,
+) -> Result<(), String> {
+    let url = session.config.simulator.launch_url.as_str();
     for i in 0..hits.len() {
-        print_hit(&hits[i]);
         if hits[i].posted || hits[i].kind != tracker::EventKind::Hit {
             continue;
         }
@@ -41,7 +41,7 @@ async fn replay_hits(path: PathBuf) -> Result<(), String> {
         // The full measured record is the contract; the simulator predicts
         // flight, distance, and what-ifs from it.
         let body = serde_json::to_value(&hits[i]).map_err(|e| e.to_string())?;
-        let resp = match client.post(&url).json(&body).send().await {
+        let resp = match client.post(url).json(&body).send().await {
             Ok(resp) => resp,
             Err(e) => {
                 eprintln!("{}: simulator unreachable: {e}", hits[i].clip);
@@ -53,7 +53,8 @@ async fn replay_hits(path: PathBuf) -> Result<(), String> {
         match status {
             200 => {
                 hits[i].posted = true;
-                session.write_hits(&hits).map_err(|e| e.to_string())?;
+                session.write_hits(hits).map_err(|e| e.to_string())?;
+                println!("{}: posted", hits[i].clip);
             }
             409 => eprintln!("ball already in flight"),
             400 | 503 => eprintln!("{text}"),

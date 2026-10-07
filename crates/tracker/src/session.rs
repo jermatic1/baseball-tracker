@@ -199,6 +199,21 @@ impl Clip {
         }
         Ok(out)
     }
+
+    /// Device timestamps per frame. Zeros when the clip has none.
+    pub fn stamps(&self) -> Result<Vec<u64>, TrackerError> {
+        let n = self.meta.frame_count;
+        let path = self.dir.join("stamps.bin");
+        if !path.exists() {
+            return Ok(vec![0; n]);
+        }
+        let bytes = fs::read(path)?;
+        Ok(bytes
+            .chunks_exact(16)
+            .take(n)
+            .map(|c| u64::from_le_bytes(c[0..8].try_into().unwrap()))
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -229,9 +244,22 @@ pub struct ClipWriter {
     ir_flood: f32,
     ir_dot: f32,
     fps_fallback: f64,
+    skip_depth: bool,
 }
 
 impl ClipWriter {
+    /// Skip the stereo depth pass at finish. Live clips do this: depth is
+    /// measured per detection instead, and the pass would compete with the
+    /// next clip for disk bandwidth.
+    pub fn without_depth(mut self) -> Self {
+        self.skip_depth = true;
+        self
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
     pub fn write(&mut self, frame: &StoredFrame) -> Result<(), TrackerError> {
         if self.count == 0 {
             self.width = frame.width;
@@ -261,7 +289,7 @@ impl ClipWriter {
     }
 
     pub fn finish(mut self) -> Result<String, TrackerError> {
-        if self.wrote_right && !self.wrote_depth && self.count > 0 {
+        if !self.skip_depth && self.wrote_right && !self.wrote_depth && self.count > 0 {
             eprintln!("computing depth for {} frames", self.count);
             self.left.flush()?;
             self.right.flush()?;
@@ -377,14 +405,7 @@ impl Session {
         exposure_us: u32,
         gain: u32,
     ) -> Result<String, TrackerError> {
-        let next = self
-            .clip_ids()?
-            .iter()
-            .filter_map(|s| s.parse::<u32>().ok())
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let id = format!("{next:04}");
+        let id = self.next_clip_id()?;
         let dir = self.clip_dir(&id);
         fs::create_dir_all(&dir)?;
 
@@ -438,14 +459,7 @@ impl Session {
         ir_dot: f32,
         calib: StereoCalib,
     ) -> Result<ClipWriter, TrackerError> {
-        let next = self
-            .clip_ids()?
-            .iter()
-            .filter_map(|s| s.parse::<u32>().ok())
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let id = format!("{next:04}");
+        let id = self.next_clip_id()?;
         let dir = self.clip_dir(&id);
         fs::create_dir_all(&dir)?;
         let left = File::create(dir.join("left.gray"))?;
@@ -474,7 +488,28 @@ impl Session {
             ir_flood,
             ir_dot,
             fps_fallback: self.config.capture.fps,
+            skip_depth: false,
         })
+    }
+
+    pub fn next_clip_id(&self) -> Result<String, TrackerError> {
+        let next = self
+            .clip_ids()?
+            .iter()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        Ok(format!("{next:04}"))
+    }
+
+    /// A clip directory with metadata but no frames: what a live episode
+    /// leaves behind when clips are not kept.
+    pub fn write_clip_meta(&self, id: &str, meta: &ClipMeta) -> Result<(), TrackerError> {
+        let dir = self.clip_dir(id);
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("meta.json"), serde_json::to_vec_pretty(meta)?)?;
+        Ok(())
     }
 
     pub fn load_clip(&self, id: &str) -> Result<Clip, TrackerError> {
