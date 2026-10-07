@@ -7,7 +7,8 @@
 body { font: 14px sans-serif; background: #111; color: #eee; margin: 16px; }
 img { background: #000; max-width: 100%; display: block; }
 #view { position: relative; display: inline-block; }
-#overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+#overlay, #boxes { position: absolute; left: 0; top: 0; pointer-events: none; }
+#live { margin-top: 4px; font-family: monospace; color: #fc6; }
 button { margin: 4px 4px 0 0; padding: 6px 10px; }
 .row { margin-top: 12px; }
 #status { margin-top: 8px; min-height: 1.2em; }
@@ -19,9 +20,11 @@ button { margin: 4px 4px 0 0; padding: 6px 10px; }
 <p>Manual exposure. Auto-exposure is off.</p>
 <div id="view">
   <img id="preview" alt="live preview" width="640">
+  <canvas id="boxes" width="640" height="400"></canvas>
   <canvas id="overlay" width="640" height="400"></canvas>
 </div>
 <div id="stats">waiting for stats</div>
+<div id="live"></div>
 <div class="row">
   <button data-act="exposure" data-delta="-100">Exposure −100 µs</button>
   <button data-act="exposure" data-delta="100">Exposure +100 µs</button>
@@ -65,16 +68,39 @@ async function tick() {
 setInterval(tick, 100);
 tick();
 const stats = document.getElementById("stats");
+const live = document.getElementById("live");
+const boxes = document.getElementById("boxes");
+function drawBoxes(list) {
+  boxes.width = img.naturalWidth || 640;
+  boxes.height = img.naturalHeight || 400;
+  boxes.style.width = img.clientWidth + "px";
+  boxes.style.height = img.clientHeight + "px";
+  const ctx = boxes.getContext("2d");
+  ctx.clearRect(0, 0, boxes.width, boxes.height);
+  ctx.strokeStyle = "#f80";
+  ctx.lineWidth = 2;
+  list.forEach((b) => ctx.strokeRect(b[0], b[1], b[2], b[3]));
+}
 async function pollStats() {
   const r = await fetch("/api/stats", { cache: "no-store" });
   if (!r.ok) return;
   const s = await r.json();
   if (!s) return;
-  stats.textContent =
-    `left ${s.left_fps} fps, right ${s.right_fps} fps, pairs ${s.pair_fps} fps | ` +
-    `gaps L${s.left_gaps} R${s.right_gaps}, unpaired ${s.unpaired}, record drops ${s.record_drops}`;
+  if (s.left_fps !== undefined) {
+    stats.textContent =
+      `left ${s.left_fps} fps, right ${s.right_fps} fps, pairs ${s.pair_fps} fps | ` +
+      `gaps L${s.left_gaps} R${s.right_gaps}, unpaired ${s.unpaired}, record drops ${s.record_drops}`;
+  }
+  if (s.live) {
+    const l = s.live;
+    live.textContent =
+      `watch: ${l.state} | detector ${l.fps.toFixed(0)} fps on ${l.provider}, ` +
+      `${l.lag} frames behind, ${l.drops} dropped | clips ${l.clips}` +
+      (l.last_event ? ` | ${l.last_event}` : "");
+    drawBoxes(l.boxes || []);
+  }
 }
-setInterval(pollStats, 1000);
+setInterval(pollStats, 250);
 pollStats();
 async function post(path, body) {
   const r = await fetch(path, {

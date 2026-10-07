@@ -36,12 +36,45 @@ pub struct Frame {
     pub sequence: u64,
 }
 
+/// Frame counts for one stats interval.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CaptureStats {
+    pub seconds: f64,
+    pub left: u64,
+    pub right: u64,
+    pub left_gaps: u64,
+    pub right_gaps: u64,
+    pub pairs: u64,
+    pub unpaired: u64,
+}
+
 pub trait Camera {
     fn intrinsics(&self) -> Intrinsics;
     fn set_exposure_us(&mut self, exposure_us: u32) -> Result<(), String>;
     fn set_gain(&mut self, gain: u32) -> Result<(), String>;
     fn set_fps(&mut self, fps: f32) -> Result<(), String>;
     fn poll(&mut self, timeout: Duration) -> Result<Option<Frame>, String>;
+
+    /// Push exposure and gain to the sensor; called every loop, so a camera
+    /// should skip the work when nothing changed.
+    fn apply_controls(&mut self, exposure_us: u32, gain: u32) -> Result<(), String> {
+        self.set_exposure_us(exposure_us)?;
+        self.set_gain(gain)
+    }
+
+    fn apply_lights(&mut self, _flood: f32, _dot: f32) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The device's stereo calibration as JSON, when it has one.
+    fn calibration_json(&self) -> Option<String> {
+        None
+    }
+
+    /// Counts since the previous call, once a full stats period has elapsed.
+    fn take_stats(&mut self) -> Option<CaptureStats> {
+        None
+    }
 }
 
 pub struct SyntheticCamera {
@@ -173,4 +206,4 @@ mod pair;
 #[cfg(feature = "oak")]
 mod oak;
 #[cfg(feature = "oak")]
-pub use oak::{CaptureStats, OakCamera};
+pub use oak::OakCamera;

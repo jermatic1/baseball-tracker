@@ -3,11 +3,17 @@ mod capture;
 mod convert;
 #[cfg(feature = "detect")]
 mod detect;
+#[cfg(feature = "detect")]
+mod detector;
 mod error;
 mod jpeg;
 mod label;
 mod live;
+#[cfg(feature = "detect")]
+mod replay;
 mod review;
+#[cfg(feature = "detect")]
+mod watch;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -61,10 +67,20 @@ enum Command {
     },
     Detect {
         session: PathBuf,
-        #[arg(long, default_value = "yolo26n.onnx")]
+        #[arg(long, default_value = "models/ball.onnx")]
         model: String,
         #[arg(long)]
         clip: Option<String>,
+    },
+    /// Run a live session: find the ball in every frame, measure each hit
+    /// or throw as it happens, post it, and save the clip.
+    Watch {
+        session: PathBuf,
+        #[arg(long, default_value = "models/ball.onnx")]
+        model: String,
+        /// Replay a recorded session's clips instead of opening the camera.
+        #[arg(long)]
+        from: Option<PathBuf>,
     },
 }
 
@@ -93,6 +109,23 @@ async fn run() -> Result<(), String> {
             model,
             clip,
         } => detect(session, model, clip).await,
+        Command::Watch {
+            session,
+            model,
+            from,
+        } => watch(session, model, from).await,
+    }
+}
+
+async fn watch(dir: PathBuf, model: String, from: Option<PathBuf>) -> Result<(), String> {
+    #[cfg(feature = "detect")]
+    {
+        watch::watch(dir, model, from).await
+    }
+    #[cfg(not(feature = "detect"))]
+    {
+        let _ = (dir, model, from);
+        Err("rebuild with --features detect".into())
     }
 }
 

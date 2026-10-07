@@ -9,25 +9,13 @@ use depthai::pipeline::Pipeline;
 use depthai::{Device, InputQueue, MessageQueue};
 
 use crate::pair::{self, Stamped};
-use crate::{Camera, Frame, Intrinsics};
+use crate::{Camera, CaptureStats, Frame, Intrinsics};
 
 const QUEUE: u32 = 120;
 const FRAME_POOL: i32 = 16;
 const STATS_PERIOD: Duration = Duration::from_secs(1);
 /// Aggregate host throughput the RVC2 XLink firmware sustains, per Luxonis.
 const XLINK_LIMIT_MB_S: f64 = 150.0;
-
-/// Frame counts for one stats interval.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct CaptureStats {
-    pub seconds: f64,
-    pub left: u64,
-    pub right: u64,
-    pub left_gaps: u64,
-    pub right_gaps: u64,
-    pub pairs: u64,
-    pub unpaired: u64,
-}
 
 #[derive(Default)]
 struct Counters {
@@ -152,63 +140,6 @@ impl OakCamera {
         Ok(cam)
     }
 
-    pub fn apply_controls(&mut self, exposure_us: u32, gain: u32) -> Result<(), String> {
-        let exposure_us = exposure_us.max(1);
-        let iso = gain.clamp(100, 1600);
-        if self.controls_sent && self.exposure_us == exposure_us && self.gain == iso {
-            return Ok(());
-        }
-        self.send_exposure(exposure_us, iso)?;
-        self.exposure_us = exposure_us;
-        self.gain = iso;
-        self.controls_sent = true;
-        println!("manual exposure {exposure_us} us iso {iso}");
-        Ok(())
-    }
-
-    pub fn apply_lights(&mut self, flood: f32, dot: f32) -> Result<(), String> {
-        let flood = flood.clamp(0.0, 1.0);
-        let dot = dot.clamp(0.0, 1.0);
-        if self.lights_sent
-            && (self.ir_flood - flood).abs() < 0.001
-            && (self.ir_dot - dot).abs() < 0.001
-        {
-            return Ok(());
-        }
-        let flood_result = self
-            .device
-            .set_ir_flood_light_intensity(flood)
-            .map_err(|e| e.to_string());
-        let dot_result = self
-            .device
-            .set_ir_laser_dot_projector_intensity(dot)
-            .map_err(|e| e.to_string());
-        self.ir_flood = flood;
-        self.ir_dot = dot;
-        self.lights_sent = true;
-        flood_result?;
-        dot_result?;
-        println!("ir flood {flood:.2} dot {dot:.2}");
-        Ok(())
-    }
-
-    pub fn calibration_json(&self) -> Option<String> {
-        self.calibration.clone()
-    }
-
-    /// Counts since the previous call, once a full stats period has elapsed.
-    pub fn take_stats(&mut self) -> Option<CaptureStats> {
-        let now = Instant::now();
-        let since = *self.counters.since.get_or_insert(now);
-        if now.duration_since(since) < STATS_PERIOD {
-            return None;
-        }
-        let mut stats = std::mem::take(&mut self.counters.stats);
-        stats.seconds = now.duration_since(since).as_secs_f64();
-        self.counters.since = Some(now);
-        Some(stats)
-    }
-
     fn note_received(&mut self, side: Side, seq: u64) {
         let c = &mut self.counters;
         let (count, gaps, last) = match side {
@@ -280,6 +211,63 @@ impl Camera for OakCamera {
     fn set_fps(&mut self, fps: f32) -> Result<(), String> {
         let _ = fps;
         Err("fps is fixed at open".into())
+    }
+
+    fn apply_controls(&mut self, exposure_us: u32, gain: u32) -> Result<(), String> {
+        let exposure_us = exposure_us.max(1);
+        let iso = gain.clamp(100, 1600);
+        if self.controls_sent && self.exposure_us == exposure_us && self.gain == iso {
+            return Ok(());
+        }
+        self.send_exposure(exposure_us, iso)?;
+        self.exposure_us = exposure_us;
+        self.gain = iso;
+        self.controls_sent = true;
+        println!("manual exposure {exposure_us} us iso {iso}");
+        Ok(())
+    }
+
+    fn apply_lights(&mut self, flood: f32, dot: f32) -> Result<(), String> {
+        let flood = flood.clamp(0.0, 1.0);
+        let dot = dot.clamp(0.0, 1.0);
+        if self.lights_sent
+            && (self.ir_flood - flood).abs() < 0.001
+            && (self.ir_dot - dot).abs() < 0.001
+        {
+            return Ok(());
+        }
+        let flood_result = self
+            .device
+            .set_ir_flood_light_intensity(flood)
+            .map_err(|e| e.to_string());
+        let dot_result = self
+            .device
+            .set_ir_laser_dot_projector_intensity(dot)
+            .map_err(|e| e.to_string());
+        self.ir_flood = flood;
+        self.ir_dot = dot;
+        self.lights_sent = true;
+        flood_result?;
+        dot_result?;
+        println!("ir flood {flood:.2} dot {dot:.2}");
+        Ok(())
+    }
+
+    fn calibration_json(&self) -> Option<String> {
+        self.calibration.clone()
+    }
+
+    /// Counts since the previous call, once a full stats period has elapsed.
+    fn take_stats(&mut self) -> Option<CaptureStats> {
+        let now = Instant::now();
+        let since = *self.counters.since.get_or_insert(now);
+        if now.duration_since(since) < STATS_PERIOD {
+            return None;
+        }
+        let mut stats = std::mem::take(&mut self.counters.stats);
+        stats.seconds = now.duration_since(since).as_secs_f64();
+        self.counters.since = Some(now);
+        Some(stats)
     }
 
     fn poll(&mut self, _timeout: Duration) -> Result<Option<Frame>, String> {

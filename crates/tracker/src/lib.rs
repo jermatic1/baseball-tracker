@@ -7,8 +7,9 @@ pub mod rectify;
 pub mod session;
 pub mod stereo;
 pub mod track;
+pub mod watch;
 
-pub use config::{CaptureConfig, MountConfig, SessionConfig, SimulatorConfig};
+pub use config::{CaptureConfig, MountConfig, SessionConfig, SimulatorConfig, WatchConfig};
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
 pub use launch::postable;
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
@@ -22,6 +23,7 @@ pub use track::{
     ball_at, motion_segments, select_events, track_balls, tracker_config, Anchor, AnchorKind,
     BallBox, DetFrame, Event, MotionParams, Segment, SplitKind,
 };
+pub use watch::{Episode, WatchState, Watcher};
 
 use geom::unproject;
 
@@ -207,28 +209,46 @@ fn smooth_depths(depths: &[Option<f64>], fallback: f64) -> Vec<f64> {
         .collect()
 }
 
-pub fn recompute_hits(session: &Session) -> Result<Vec<HitRecord>, TrackerError> {
-    let prev: std::collections::HashMap<String, bool> = session
-        .hits()?
-        .into_iter()
-        .map(|h| (h.key(), h.posted))
+/// The events of one clip from its saved detections.
+pub fn clip_hits(session: &Session, id: &str) -> Result<Vec<HitRecord>, TrackerError> {
+    let dets = session.load_detections(id)?;
+    let clip = session.load_clip(id)?;
+    let intr = Intrinsics::from_fov(clip.meta.width, clip.meta.height, 80.0, 55.0);
+    Ok(process_clip(id, &dets.frames, &session.config, &intr))
+}
+
+/// Replace one clip's records in a hit list. A record that was already
+/// posted stays posted when it comes back under the same key.
+pub fn merge_clip_hits(
+    existing: Vec<HitRecord>,
+    clip: &str,
+    mut new: Vec<HitRecord>,
+) -> Vec<HitRecord> {
+    let posted: std::collections::HashSet<String> = existing
+        .iter()
+        .filter(|h| h.clip == clip && h.posted)
+        .map(HitRecord::key)
         .collect();
+    for hit in &mut new {
+        if posted.contains(&hit.key()) {
+            hit.posted = true;
+        }
+    }
+    let mut out: Vec<HitRecord> = existing.into_iter().filter(|h| h.clip != clip).collect();
+    out.extend(new);
+    out.sort_by(|a, b| a.clip.cmp(&b.clip));
+    out
+}
+
+pub fn recompute_hits(session: &Session) -> Result<Vec<HitRecord>, TrackerError> {
+    let prev = session.hits()?;
     let mut out = Vec::new();
     for id in session.clip_ids()? {
-        let dets = match session.load_detections(&id) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        let clip = session.load_clip(&id)?;
-        let w = clip.meta.width;
-        let h = clip.meta.height;
-        let intr = Intrinsics::from_fov(w, h, 80.0, 55.0);
-        for mut hit in process_clip(&id, &dets.frames, &session.config, &intr) {
-            if prev.get(&hit.key()) == Some(&true) {
-                hit.posted = true;
-            }
-            out.push(hit);
+        if session.load_detections(&id).is_err() {
+            continue;
         }
+        let old: Vec<HitRecord> = prev.iter().filter(|h| h.clip == id).cloned().collect();
+        out.extend(merge_clip_hits(old, &id, clip_hits(session, &id)?));
     }
     session.write_hits(&out)?;
     Ok(out)
@@ -711,5 +731,135 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!((hits[0].exit_velocity_mph - 65.0).abs() < 1.0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn feed(s: &Synth, cfg: WatchConfig) -> Vec<Episode> {
+        let mut w = Watcher::new(cfg);
+        s.frames
+            .iter()
+            .filter_map(|f| w.observe(f.index, f.t_ns, f.balls.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn watcher_ignores_a_resting_ball() {
+        let mut s = Synth::new(300);
+        s.rest(TEE, 0..300, 1.0);
+        for i in (0..300).step_by(7) {
+            s.frames[i].balls.clear();
+        }
+        let mut w = Watcher::new(WatchConfig::default());
+        for f in &s.frames {
+            assert!(w.observe(f.index, f.t_ns, f.balls.clone()).is_none());
+        }
+        assert_eq!(w.state(), WatchState::Idle);
+        assert!(w.flush().is_none());
+    }
+
+    #[test]
+    fn watcher_window_measures_like_the_whole_clip() {
+        let mut s = Synth::new(180);
+        s.static_px(80.0, 360.0);
+        s.rest(TEE, 0..130, 1.0);
+        s.flight(TEE, hit_vel(), 129.5 / SYNTH_FPS, 130..140, &[]);
+        let eps = feed(&s, WatchConfig::default());
+        assert_eq!(eps.len(), 1, "{eps:?}");
+        let ep = &eps[0];
+        assert_eq!(ep.first(), 80, "half a second of pre-roll before frame 130");
+        assert_eq!(ep.last(), 154, "settles 0.15 s after the last flight frame");
+        let live = process_clip("0001", &ep.frames, &s.cfg, &s.intr);
+        let batch = s.records();
+        assert_eq!(live.len(), 1, "{live:?}");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(live[0].kind, EventKind::Hit);
+        assert_eq!(live[0].samples, batch[0].samples);
+        assert!((live[0].exit_velocity_mph - batch[0].exit_velocity_mph).abs() < 0.1);
+        assert!((live[0].launch_angle_deg - batch[0].launch_angle_deg).abs() < 0.1);
+        assert_eq!(live[0].frame_start, batch[0].frame_start);
+        let clip = ep.as_clip();
+        assert_eq!(clip[0].index, 0);
+        let saved = process_clip("0002", &clip, &s.cfg, &s.intr);
+        assert_eq!(saved[0].frame_start, batch[0].frame_start - 80);
+    }
+
+    #[test]
+    fn watcher_catches_a_pitch_entering_the_image() {
+        let mut s = Synth::new(60);
+        let vel = launch_velocity(45.0, 0.0, -100.0);
+        s.flight([1.2, 1.0, -0.6], vel, 0.0, 0..12, &[]);
+        let eps = feed(&s, WatchConfig::default());
+        assert_eq!(eps.len(), 1, "{eps:?}");
+        assert_eq!(eps[0].first(), 0);
+        let live = process_clip("0001", &eps[0].frames, &s.cfg, &s.intr);
+        assert_eq!(live.len(), 1, "{live:?}");
+        assert_eq!(live[0].kind, EventKind::Pitch);
+    }
+
+    #[test]
+    fn watcher_closes_a_window_that_runs_too_long() {
+        let cfg = WatchConfig {
+            max_episode_s: 1.0,
+            ..WatchConfig::default()
+        };
+        let mut s = Synth::new(300);
+        for i in 0..300 {
+            s.push(i, 50.0 + (i as f64 * 10.0) % 500.0, 200.0, 2.5);
+        }
+        let eps = feed(&s, cfg);
+        assert_eq!(
+            eps.len(),
+            2,
+            "{:?}",
+            eps.iter()
+                .map(|e| (e.first(), e.last()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(eps[0].last(), 110);
+        assert_eq!(eps[1].first(), 61, "pre-roll survives the cut");
+        assert_eq!(eps[1].last(), 211);
+    }
+
+    #[test]
+    fn merge_clip_hits_keeps_posted_flags() {
+        let mut s = Synth::new(12);
+        s.flight(
+            [1.2, 1.0, -0.6],
+            launch_velocity(45.0, 0.0, -100.0),
+            0.0,
+            0..12,
+            &[],
+        );
+        let rec = s.records().remove(0);
+        let with = |clip: &str, segment: usize, posted: bool| HitRecord {
+            clip: clip.to_string(),
+            segment,
+            posted,
+            ..rec.clone()
+        };
+        let existing = vec![
+            with("0001", 0, true),
+            with("0002", 0, true),
+            with("0002", 1, false),
+            with("0003", 0, false),
+        ];
+        let merged = merge_clip_hits(
+            existing,
+            "0002",
+            vec![with("0002", 0, false), with("0002", 1, false)],
+        );
+        let flags: Vec<_> = merged
+            .iter()
+            .map(|h| (h.clip.as_str(), h.segment, h.posted))
+            .collect();
+        assert_eq!(
+            flags,
+            vec![
+                ("0001", 0, true),
+                ("0002", 0, true),
+                ("0002", 1, false),
+                ("0003", 0, false)
+            ]
+        );
+        assert_eq!(merge_clip_hits(merged, "0002", Vec::new()).len(), 2);
     }
 }

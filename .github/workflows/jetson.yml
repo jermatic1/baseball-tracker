@@ -1,12 +1,13 @@
 # Build the tracker for the Jetson (aarch64, JetPack 7 = Ubuntu 24.04) on
 # GitHub's arm64 runners. The first run compiles depthai-core and its vcpkg
 # dependencies, which takes about an hour; the cache makes later runs short.
+# The bundle loads the board's ONNX Runtime at start, so none is linked here.
+# Every push to main replaces the bundle on the "latest" release.
 name: jetson
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -56,8 +57,15 @@ jobs:
           name: tracker-jetson-aarch64
           path: dist/tracker-jetson-aarch64.zip
 
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Move the latest tag to this commit
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
+      - name: Update the latest release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: latest
+          name: Latest build
+          body: Built from ${{ github.sha }}.
           files: dist/tracker-jetson-aarch64.zip

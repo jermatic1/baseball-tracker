@@ -42,6 +42,35 @@ impl Default for TrackingConfig {
     }
 }
 
+/// Live watching: when a detected ball counts as moving and how much of the
+/// stream around the motion becomes a clip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchConfig {
+    /// A ball farther than this from every recently seen ball has moved.
+    pub move_px: f64,
+    /// Seconds kept before the first motion.
+    pub preroll_s: f64,
+    /// Seconds without motion that end the window.
+    pub settle_s: f64,
+    /// Longest window, in case something keeps moving.
+    pub max_episode_s: f64,
+    /// Write the frames of each window as a clip. Off keeps only the
+    /// detections and events.
+    pub keep_clips: bool,
+}
+
+impl Default for WatchConfig {
+    fn default() -> Self {
+        Self {
+            move_px: 4.0,
+            preroll_s: 0.5,
+            settle_s: 0.15,
+            max_episode_s: 6.0,
+            keep_clips: true,
+        }
+    }
+}
+
 /// Stereo correction for this rig. The raw eyes are not rectified, so a
 /// fixed horizontal misalignment shows up as extra disparity everywhere.
 /// Calibrate it from one measured distance: offset = measured disparity -
@@ -68,6 +97,8 @@ pub struct SessionConfig {
     pub stereo: StereoConfig,
     #[serde(default)]
     pub tracking: TrackingConfig,
+    #[serde(default)]
+    pub watch: WatchConfig,
 }
 
 impl SessionConfig {
@@ -95,6 +126,7 @@ impl SessionConfig {
                 disparity_offset_px: 17.1,
             },
             tracking: TrackingConfig::default(),
+            watch: WatchConfig::default(),
         }
     }
 
