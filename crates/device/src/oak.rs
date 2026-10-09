@@ -106,11 +106,19 @@ impl OakCamera {
         let (q_left, ctrl_left) = open_eye(CameraBoardSocket::CamB)?;
         let (q_right, ctrl_right) = open_eye(CameraBoardSocket::CamC)?;
         pipeline.start().map_err(|e| e.to_string())?;
-        let calibration = pipeline
-            .calibration_data_json()
-            .ok()
-            .flatten()
-            .map(|v| v.to_string());
+        // The device's own EEPROM calibration; the pipeline slot is empty
+        // unless a program fills it.
+        let calibration = match device.read_calibration_json() {
+            Ok(Some(v)) => Some(v.to_string()),
+            Ok(None) => {
+                println!("device has no calibration data");
+                None
+            }
+            Err(e) => {
+                println!("device calibration unavailable: {e}");
+                None
+            }
+        };
         let mut cam = Self {
             device,
             _pipeline: pipeline,

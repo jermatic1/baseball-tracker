@@ -8,4 +8,4 @@ license.workspace = true
 oak = ["dep:depthai"]
 
 [dependencies]
-depthai = { git = "https://github.com/jermatic1/depthai-rs.git", rev = "f476530", optional = true }
+depthai = { git = "https://github.com/jermatic1/depthai-rs.git", rev = "0e123d5", optional = true }
