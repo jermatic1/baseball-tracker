@@ -13,7 +13,14 @@ Tracker is a real-time hitting data system. It measures exit velocity, launch an
 
 ### Jetson
 
-On a Jetson Orin Nano with JetPack 7:
+Flash the Jetson Orin Nano with the JetPack 7 ISO and finish the first-boot wizard. The image ships without ssh host keys, so run this once on the board before ssh works:
+
+```bash
+sudo ssh-keygen -A
+sudo systemctl restart ssh
+```
+
+Then install over ssh:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/tools/jetson-install.sh | bash -s -- jermatic1/baseball-tracker
