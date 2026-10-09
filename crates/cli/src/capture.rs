@@ -170,6 +170,9 @@ pub(crate) mod server {
         pub sent: Arc<AtomicU64>,
         pub drops: Arc<AtomicU64>,
         pub status: Arc<Mutex<LiveStatus>>,
+        /// Set when the server is shutting down so the detector can skip
+        /// its backlog if no episode is open.
+        pub stop: Arc<AtomicBool>,
     }
 
     #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -259,6 +262,9 @@ pub(crate) mod server {
         let (done, _tap) = {
             let mut st = state.lock().map_err(|e| e.to_string())?;
             st.record_tx.take();
+            if let Some(tap) = &st.live {
+                tap.stop.store(true, Ordering::Relaxed);
+            }
             (st.record_done.take(), st.live.take())
         };
         if let Some(done) = done {

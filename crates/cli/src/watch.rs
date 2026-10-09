@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,6 +29,13 @@ struct Finished {
     episode: Episode,
 }
 
+/// Handles the detector thread shares with the server and the page.
+struct Shared {
+    status: Arc<Mutex<LiveStatus>>,
+    sent: Arc<AtomicU64>,
+    stop: Arc<AtomicBool>,
+}
+
 pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Result<(), String> {
     let session = Session::create(&path).map_err(|e| e.to_string())?;
     let detector = Detector::load(&model)?;
@@ -44,8 +51,14 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
         sent: Arc::new(AtomicU64::new(0)),
         drops: Arc::new(AtomicU64::new(0)),
         status: Arc::clone(&status),
+        stop: Arc::new(AtomicBool::new(false)),
     };
-    let sent = Arc::clone(&tap.sent);
+    let shared = Shared {
+        status: Arc::clone(&status),
+        sent: Arc::clone(&tap.sent),
+        stop: Arc::clone(&tap.stop),
+    };
+    let watch_status = Arc::clone(&status);
     let c = session.config.capture.clone();
     let coordinator = tokio::spawn(coordinate(
         done_rx,
@@ -64,27 +77,37 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
             let device_json = std::fs::read_to_string(session.dir.join("calibration.json")).ok();
             let calib = crate::capture::stereo_calib(&session, device_json.as_deref());
             let cam = crate::replay::ClipCamera::open(&source)?;
-            spawn_detector(frame_rx, detector, &session, calib, status, sent, done_tx);
+            spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
             server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap)).await?;
         }
         None => {
             #[cfg(not(feature = "oak"))]
             {
-                let _ = (frame_rx, done_tx, sent);
+                let _ = (frame_rx, done_tx, shared);
                 return Err("rebuild with --features oak, or pass --from <session>".into());
             }
             #[cfg(feature = "oak")]
             {
                 let (cam, calib) = crate::capture::open_oak(&session)?;
-                spawn_detector(frame_rx, detector, &session, calib, status, sent, done_tx);
+                spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
                 server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap)).await?;
             }
         }
     }
+    let pending = || {
+        watch_status
+            .lock()
+            .map(|s| format!("{} queued frames, detector {}", s.lag, s.state))
+            .unwrap_or_default()
+    };
+    println!("waiting for the detector to finish: {}", pending());
     match tokio::time::timeout(Duration::from_secs(30), coordinator).await {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => Err(format!("coordinator failed: {e}")),
-        Err(_) => Err("timed out finishing the last episode".into()),
+        Err(_) => Err(format!(
+            "gave up after 30 s waiting for the detector: {}",
+            pending()
+        )),
     }
 }
 
@@ -93,13 +116,12 @@ fn spawn_detector(
     detector: Detector,
     session: &Session,
     calib: StereoCalib,
-    status: Arc<Mutex<LiveStatus>>,
-    sent: Arc<AtomicU64>,
+    shared: Shared,
     done: UnboundedSender<Finished>,
 ) {
     let session = session.clone();
     std::thread::spawn(move || {
-        if let Err(e) = detect_loop(rx, detector, session, calib, status, sent, done) {
+        if let Err(e) = detect_loop(rx, detector, session, calib, shared, done) {
             eprintln!("detector stopped: {e}");
         }
     });
@@ -112,10 +134,10 @@ fn detect_loop(
     mut detector: Detector,
     session: Session,
     calib: StereoCalib,
-    status: Arc<Mutex<LiveStatus>>,
-    sent: Arc<AtomicU64>,
+    shared: Shared,
     done: UnboundedSender<Finished>,
 ) -> Result<(), String> {
+    let Shared { status, sent, stop } = shared;
     let cfg: WatchConfig = session.config.watch.clone();
     let c = session.config.capture.clone();
     let rectifier = session.rectifier(c.width, c.height);
@@ -127,8 +149,20 @@ fn detect_loop(
     let mut taken = 0u64;
     let mut meter = (Instant::now(), 0u32);
     let mut last_status = Instant::now();
+    let mut first = Some(Instant::now());
     while let Ok(frame) = rx.recv() {
         taken += 1;
+        if stop.load(Ordering::Relaxed) && watcher.state() == WatchState::Idle {
+            let skipped = sent.load(Ordering::Relaxed).saturating_sub(taken) + 1;
+            println!("stopping with no episode open; skipping {skipped} queued frames");
+            break;
+        }
+        if first.is_some() {
+            println!(
+                "detector: first inference, building the {} engine if it is not cached (minutes on a first start)",
+                detector.provider()
+            );
+        }
         let balls = match detector.detect(&FrameView {
             width: frame.width,
             height: frame.height,
@@ -144,6 +178,9 @@ fn detect_loop(
                 Vec::new()
             }
         };
+        if let Some(started) = first.take() {
+            println!("detector ready in {:.1} s", started.elapsed().as_secs_f64());
+        }
         let boxes: Vec<[f64; 4]> = balls.iter().map(|b| [b.x, b.y, b.w, b.h]).collect();
         let was_open = watcher.state() == WatchState::Episode;
         let episode = watcher.observe(index, frame.t_ns, balls);
