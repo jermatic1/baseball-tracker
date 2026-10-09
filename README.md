@@ -11,6 +11,17 @@ Tracker is a real-time hitting data system. It measures exit velocity, launch an
 
 ## Install
 
+### Jetson setup
+
+Flash the Jetson Orin Nano with the JetPack 7 ISO and finish the first-boot wizard. The image ships without ssh host keys, so sshd fails to start until they exist. On the board, once:
+
+```bash
+sudo ssh-keygen -A
+sudo systemctl restart ssh
+```
+
+Then connect over ssh and continue with the prebuilt install below.
+
 ### Prebuilt (Jetson)
 
 Every push to `main` rebuilds `tracker-jetson-aarch64.zip` for JetPack 7 and attaches it to the `latest` release. On the board:
