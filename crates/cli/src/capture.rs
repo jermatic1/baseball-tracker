@@ -128,12 +128,19 @@ pub(crate) fn stereo_calib(
     device_json: Option<&str>,
 ) -> tracker::StereoCalib {
     let c = &session.config.capture;
-    match session.rectifier(c.width, c.height) {
-        Some(_) => println!("stereo rectification from device calibration"),
-        None => println!("no device calibration; using the disparity offset from config"),
-    }
-    let calib = tracker::stereo_calib_from_device(device_json, c.width)
-        .with_offset(session.config.stereo.disparity_offset_px);
+    // Rectified frames have no offset by construction; raw frames get the
+    // hand-calibrated one from the config.
+    let calib = match session.rectifier(c.width, c.height) {
+        Some(r) => {
+            println!("stereo rectification from device calibration");
+            r.calib()
+        }
+        None => {
+            println!("no device calibration; using the disparity offset from config");
+            tracker::stereo_calib_from_device(device_json, c.width)
+                .with_offset(session.config.stereo.disparity_offset_px)
+        }
+    };
     println!(
         "stereo fx {:.1} baseline {:.3} m, disparity offset {:.1} px",
         calib.fx, calib.baseline_m, calib.disparity_offset_px

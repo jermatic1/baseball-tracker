@@ -7,7 +7,7 @@
 
 use serde_json::Value;
 
-use crate::stereo::StereoCalib;
+use crate::stereo::{stereo_baseline_m, StereoCalib};
 use crate::TrackerError;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,7 +77,11 @@ impl Rectifier {
             dist: distortion(right_cam),
             r: matrix3(rect.get("rectifiedRotationRight"))?,
         };
-        let baseline_m = baseline(left_cam, right_cam)?;
+        let cameras = v
+            .get("cameraData")
+            .and_then(|c| c.as_array())
+            .ok_or_else(|| TrackerError::Other("calibration has no cameraData".into()))?;
+        let baseline_m = stereo_baseline_m(cameras, left_socket, right_socket)?;
         let k = left.k;
         let map_left = build_map(&left, k, width, height);
         let map_right = build_map(&right, k, width, height);
@@ -187,29 +191,6 @@ fn matrix3(v: Option<&Value>) -> Result<[[f64; 3]; 3], TrackerError> {
         }
     }
     Ok(out)
-}
-
-fn baseline(left: &Value, right: &Value) -> Result<f64, TrackerError> {
-    let tx = |cam: &Value| -> Option<f64> {
-        let t = cam.get("extrinsics")?.get("translation")?;
-        t.get("x")
-            .and_then(|x| x.as_f64())
-            .or_else(|| t.as_array()?.first()?.as_f64())
-    };
-    // Left carries the translation to right in depthai's chain; fall back to
-    // the other direction when only right has one.
-    let delta = tx(left).or_else(|| tx(right)).unwrap_or(0.0).abs();
-    let m = if (1.0..30.0).contains(&delta) {
-        delta / 100.0
-    } else if (30.0..300.0).contains(&delta) {
-        delta / 1000.0
-    } else {
-        delta
-    };
-    if !(0.02..0.2).contains(&m) {
-        return Err(TrackerError::Other(format!("baseline {m} m out of range")));
-    }
-    Ok(m)
 }
 
 fn mul3(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
