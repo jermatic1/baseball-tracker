@@ -124,34 +124,15 @@ fn parse_eeprom(json: &str, width: u32) -> Result<StereoCalib, TrackerError> {
         .get("cameraData")
         .and_then(|c| c.as_array())
         .ok_or_else(|| TrackerError::Other("calibration has no cameraData".into()))?;
-    let mut left_fx = None;
-    let mut left_w = None;
-    let mut left_tx = None;
-    let mut right_tx = None;
-    for entry in cameras {
-        let Some(pair) = entry.as_array() else {
-            continue;
-        };
-        let Some(socket) = pair.first().and_then(|s| s.as_i64()) else {
-            continue;
-        };
-        let Some(cam) = pair.get(1) else {
-            continue;
-        };
-        if socket == 1 {
-            left_fx = matrix_fx(cam.get("intrinsicMatrix"));
-            left_w = cam.get("width").and_then(|w| w.as_u64());
-            left_tx = translation_x(cam.get("extrinsics"));
-        } else if socket == 2 {
-            right_tx = translation_x(cam.get("extrinsics"));
-        }
-    }
-    let fx = left_fx.ok_or_else(|| TrackerError::Other("left fx missing".into()))?;
-    let tx_l = left_tx.ok_or_else(|| TrackerError::Other("left translation missing".into()))?;
-    let tx_r = right_tx.ok_or_else(|| TrackerError::Other("right translation missing".into()))?;
-    let baseline_m = baseline_meters(tx_r - tx_l);
-    if !(0.02..0.2).contains(&baseline_m) || !fx.is_finite() || fx < 100.0 {
-        return Err(TrackerError::Other("calibration out of range".into()));
+    let (left_socket, right_socket) = stereo_sockets(&v);
+    let left = camera_json(cameras, left_socket)
+        .ok_or_else(|| TrackerError::Other("left camera missing from calibration".into()))?;
+    let fx = matrix_fx(left.get("intrinsicMatrix"))
+        .ok_or_else(|| TrackerError::Other("left fx missing".into()))?;
+    let left_w = left.get("width").and_then(|w| w.as_u64());
+    let baseline_m = stereo_baseline_m(cameras, left_socket, right_socket)?;
+    if !fx.is_finite() || fx < 100.0 {
+        return Err(TrackerError::Other("calibration fx out of range".into()));
     }
     let calib_w = left_w.unwrap_or(width as u64).max(1) as f64;
     let fx = fx * width as f64 / calib_w;
@@ -172,17 +153,70 @@ fn matrix_fx(matrix: Option<&Value>) -> Option<f64> {
     fx.is_finite().then_some(fx)
 }
 
-fn translation_x(extrinsics: Option<&Value>) -> Option<f64> {
-    let ext = extrinsics?;
-    let t = ext
-        .get("translation")
-        .or_else(|| ext.get("specTranslation"))?;
-    if let Some(x) = t.get("x").and_then(|v| v.as_f64()) {
-        return Some(x);
-    }
-    t.as_array()?.first()?.as_f64()
+/// The stereo pair's sockets: from `stereoRectificationData` when present,
+/// else depthai's conventional left 1 and right 2.
+pub(crate) fn stereo_sockets(root: &Value) -> (i64, i64) {
+    let rect = root.get("stereoRectificationData");
+    let get = |k: &str| rect.and_then(|r| r.get(k)).and_then(|s| s.as_i64());
+    (
+        get("leftCameraSocket").unwrap_or(1),
+        get("rightCameraSocket").unwrap_or(2),
+    )
 }
 
+/// `cameraData` entry for a socket; the map serializes as `[socket, info]` pairs.
+pub(crate) fn camera_json(cameras: &[Value], socket: i64) -> Option<&Value> {
+    cameras.iter().find_map(|entry| {
+        let pair = entry.as_array()?;
+        (pair.first()?.as_i64()? == socket)
+            .then(|| pair.get(1))
+            .flatten()
+    })
+}
+
+/// Distance between the two eyes from the extrinsics chain. Each camera
+/// stores its translation to one other camera (`toCameraSocket`), so the
+/// baseline is the direct link when one exists, else the difference of the
+/// two links when both point at the same third camera.
+pub(crate) fn stereo_baseline_m(
+    cameras: &[Value],
+    left_socket: i64,
+    right_socket: i64,
+) -> Result<f64, TrackerError> {
+    let link = |socket: i64| -> Option<([f64; 3], i64)> {
+        let ext = camera_json(cameras, socket)?.get("extrinsics")?;
+        let t = ext.get("translation")?;
+        let v = [
+            t.get("x")?.as_f64()?,
+            t.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            t.get("z").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        ];
+        Some((v, ext.get("toCameraSocket")?.as_i64()?))
+    };
+    let norm = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let (left, right) = (link(left_socket), link(right_socket));
+    let delta = match (left, right) {
+        (Some((t, to)), _) if to == right_socket => norm(t),
+        (_, Some((t, to))) if to == left_socket => norm(t),
+        (Some((tl, to_l)), Some((tr, to_r))) if to_l == to_r => {
+            norm([tl[0] - tr[0], tl[1] - tr[1], tl[2] - tr[2]])
+        }
+        _ => {
+            return Err(TrackerError::Other(
+                "calibration extrinsics do not link the stereo pair".into(),
+            ))
+        }
+    };
+    let m = baseline_meters(delta);
+    if !(0.02..0.2).contains(&m) {
+        return Err(TrackerError::Other(format!(
+            "baseline {m:.3} m out of range"
+        )));
+    }
+    Ok(m)
+}
+
+/// depthai stores translations in centimetres; accept millimetres too.
 fn baseline_meters(delta: f64) -> f64 {
     let a = delta.abs();
     if (1.0..30.0).contains(&a) {
@@ -341,9 +375,9 @@ mod tests {
         let json = r#"{
             "cameraData": [
                 [1, {"width": 1280, "intrinsicMatrix": [[800.0, 0, 640], [0, 800, 400], [0, 0, 1]],
-                     "extrinsics": {"translation": {"x": -3.75, "y": 0, "z": 0}}}],
+                     "extrinsics": {"translation": {"x": -3.75, "y": 0, "z": 0}, "toCameraSocket": 0}}],
                 [2, {"width": 1280, "intrinsicMatrix": [[800.0, 0, 640], [0, 800, 400], [0, 0, 1]],
-                     "extrinsics": {"translation": {"x": 3.75, "y": 0, "z": 0}}}]
+                     "extrinsics": {"translation": {"x": 3.75, "y": 0, "z": 0}, "toCameraSocket": 0}}]
             ]
         }"#;
         let c = stereo_calib_from_device(Some(json), 1280);
@@ -375,6 +409,34 @@ mod tests {
                 img[((oy + y) * w + ox + x) as usize] = (30 + x * 17 + y * 9) as u8;
             }
         }
+    }
+
+    #[test]
+    fn baseline_follows_the_extrinsics_chain() {
+        // Both eyes link to the colour camera: left 3.75 cm one way, right
+        // 3.75 cm the other, 7.5 cm apart.
+        let via_third = serde_json::json!([
+            [0, {"extrinsics": {"translation": {"x": 0.0, "y": 0.0, "z": 0.0}, "toCameraSocket": -1}}],
+            [1, {"extrinsics": {"translation": {"x": 3.75, "y": 0.02, "z": 0.0}, "toCameraSocket": 0}}],
+            [2, {"extrinsics": {"translation": {"x": -3.75, "y": 0.0, "z": 0.0}, "toCameraSocket": 0}}]
+        ]);
+        let b = stereo_baseline_m(via_third.as_array().unwrap(), 1, 2).unwrap();
+        assert!((b - 0.075).abs() < 0.001, "{b}");
+        // Left links straight to right.
+        let direct = serde_json::json!([
+            [1, {"extrinsics": {"translation": {"x": -7.5, "y": 0.0, "z": 0.0}, "toCameraSocket": 2}}],
+            [2, {"extrinsics": {"translation": {"x": -3.75, "y": 0.0, "z": 0.0}, "toCameraSocket": 0}}]
+        ]);
+        let b = stereo_baseline_m(direct.as_array().unwrap(), 1, 2).unwrap();
+        assert!((b - 0.075).abs() < 0.001, "{b}");
+        // The old mistake: subtracting unrelated links must not be accepted.
+        let unrelated = serde_json::json!([
+            [1, {"extrinsics": {"translation": {"x": -7.5, "y": 0.0, "z": 0.0}, "toCameraSocket": 2}}],
+            [2, {"extrinsics": {"translation": {"x": -3.75, "y": 0.0, "z": 0.0}, "toCameraSocket": 0}}]
+        ]);
+        assert!(
+            (stereo_baseline_m(unrelated.as_array().unwrap(), 1, 2).unwrap() - 0.075).abs() < 0.001
+        );
     }
 
     #[test]
