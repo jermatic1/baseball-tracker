@@ -31,6 +31,8 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: astral-sh/setup-uv@v6
 
       - name: Cache depthai-core and cargo
