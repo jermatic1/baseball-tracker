@@ -7,7 +7,7 @@ Tracker is a real-time hitting data system. It measures exit velocity, launch an
 - Luxonis OAK-D (RVC2) on a USB 3 port.
 - Linux on x86_64, or a Jetson Orin Nano with JetPack 7.
 - A home plate in view of the camera. A batter's box mat with an integrated plate works.
-- To train the ball detector, once: a CUDA or ROCm GPU and [`uv`](https://docs.astral.sh/uv/).
+- To train the ball detector, once: a CUDA or ROCm GPU.
 
 ## Install
 
@@ -24,13 +24,13 @@ Then connect over ssh and continue with the prebuilt install below.
 
 ### Prebuilt (Jetson)
 
-Every push to `main` rebuilds `tracker-jetson-aarch64.zip` for JetPack 7 and attaches it to the `latest` release. On the board:
+Every push to `main` rebuilds the bundle for JetPack 7.2 and attaches it to the `latest` release. On the board:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/tools/jetson-install.sh | bash -s -- jermatic1/baseball-tracker
+curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/install.sh | sh
 ```
 
-This installs the runtime libraries, the ONNX Runtime GPU wheel from the [Ultralytics Jetson guide](https://docs.ultralytics.com/guides/nvidia-jetson/), and the camera udev rule, and unpacks the bundle into `~/tracker`.
+This installs the runtime libraries and the camera udev rule, then unpacks the tracker with its ONNX Runtime into `~/tracker`. Set `TRACKER_INSTALL` to choose another directory.
 
 ### From source
 
@@ -41,6 +41,7 @@ sudo apt install build-essential clang libclang-dev cmake ninja-build pkg-config
   autoconf automake autoconf-archive libtool libudev-dev libssl-dev nasm libdw-dev libelf-dev
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sh -c "$(curl -sL https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Then:
@@ -51,7 +52,7 @@ task release
 
 The first build compiles the camera library from source and takes a while. The result is `dist/release/tracker`, one executable for everything.
 
-Detection runs on the GPU through ONNX Runtime. On x86_64 the build downloads a runtime with CUDA and TensorRT support. On the Jetson the tracker loads the runtime at start from the `onnxruntime-gpu` Python package, so install the wheel from the [Ultralytics Jetson guide](https://docs.ultralytics.com/guides/nvidia-jetson/) with pip. `ORT_DYLIB_PATH` overrides where the runtime is found. Without a GPU runtime the detector runs on the CPU.
+Detection runs on the GPU through ONNX Runtime. The build installs the platform's ONNX Runtime package with `uv`, Microsoft's on x86_64 and the JetPack 7.2 build from the [Ultralytics Jetson guide](https://docs.ultralytics.com/guides/nvidia-jetson/) on the Jetson, and places the libraries next to the executable. `ORT_DYLIB_PATH` points the tracker at a different runtime. Without a GPU the detector runs on the CPU.
 
 ### Camera access
 

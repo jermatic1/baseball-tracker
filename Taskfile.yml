@@ -29,15 +29,25 @@ tasks:
     cmds:
       - cargo clippy --workspace --all-targets -- -D warnings
       - cargo clippy --workspace --all-targets --features oak -- -D warnings
-      - cargo clippy -p cli --all-targets --features oak,load-dynamic -- -D warnings
+
+  onnxruntime:
+    desc: Put the platform's ONNX Runtime next to the release binary
+    cmds:
+      - uv pip install --python 3.12 --target target/onnxruntime --group onnxruntime
+      - mkdir -p target/release
+      - cp target/onnxruntime/onnxruntime/capi/libonnxruntime*.so* target/release/
+    status:
+      - ls target/release/libonnxruntime.so*
 
   run:
     desc: Live session; detects, measures, and posts every hit and throw
+    deps: [onnxruntime]
     cmds:
       - cargo run -p cli --release --features oak --quiet -- watch sessions/{{.SESSION}}
 
   replay:
     desc: Run a recorded session through the live path without the camera
+    deps: [onnxruntime]
     cmds:
       - cargo run -p cli --release --quiet -- watch sessions/{{.SESSION}}-replay --from sessions/{{.SESSION}}
 
@@ -92,6 +102,7 @@ tasks:
 
   detect:
     desc: Detect balls in a saved session
+    deps: [onnxruntime]
     cmds:
       - cargo run -p cli --release --quiet -- detect sessions/{{.SESSION}} --model {{.MODEL | default "models/ball.onnx"}} {{if .CLIP}}--clip {{.CLIP}}{{end}}
 
@@ -101,7 +112,10 @@ tasks:
       - cargo run -p cli --release --features oak --quiet -- capture sessions/{{.SESSION}} --once
 
   release:
-    desc: Check, then build the tracker executable into dist/release
+    desc: Check, then build the tracker and what it needs to run into dist/release
     cmds:
       - task: check
-      - tools/bundle.sh dist/release
+      - cargo build -p cli --release --features oak
+      - task: onnxruntime
+      - rm -rf dist/release && mkdir -p dist/release
+      - cp -a target/release/tracker target/release/*.so* LICENSE config.example.toml dist/release/

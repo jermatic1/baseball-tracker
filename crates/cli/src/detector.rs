@@ -24,7 +24,6 @@ pub struct FrameView<'a> {
 
 impl Detector {
     pub fn load(model: &str) -> Result<Self, String> {
-        #[cfg(feature = "load-dynamic")]
         load_runtime()?;
         ultralytics_inference::logging::set_verbose(false);
         let yolo = YOLOModel::load(model).map_err(|e| e.to_string())?;
@@ -146,36 +145,30 @@ fn median_depth(
     Some(vals[vals.len() / 2] as f64 / 1000.0)
 }
 
-/// Open the ONNX Runtime installed on this machine. `ORT_DYLIB_PATH` names it
-/// directly; otherwise it is the shared library inside the `onnxruntime`
-/// Python package, which is how a Jetson gets its GPU build.
-#[cfg(feature = "load-dynamic")]
+/// Open the ONNX Runtime shipped next to the executable, unless `ORT_DYLIB_PATH`
+/// names one.
 fn load_runtime() -> Result<(), String> {
     if std::env::var_os("ORT_DYLIB_PATH").is_some() {
         return Ok(());
     }
-    let out = std::process::Command::new("python3")
-        .args([
-            "-c",
-            "import onnxruntime, os; print(os.path.dirname(onnxruntime.__file__))",
-        ])
-        .output()
-        .map_err(|e| format!("python3: {e}"))?;
-    if !out.status.success() {
-        return Err(
-            "ONNX Runtime not found: pip install onnxruntime-gpu or set ORT_DYLIB_PATH".into(),
-        );
-    }
-    let capi = std::path::Path::new(String::from_utf8_lossy(&out.stdout).trim()).join("capi");
-    let lib = std::fs::read_dir(&capi)
-        .map_err(|e| format!("{}: {e}", capi.display()))?
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .ok_or("cannot locate the tracker executable")?;
+    let lib = std::fs::read_dir(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .find(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with("libonnxruntime.so"))
         })
-        .ok_or_else(|| format!("no libonnxruntime.so in {}", capi.display()))?;
+        .ok_or_else(|| {
+            format!(
+                "no libonnxruntime.so in {}; run `task onnxruntime` or set ORT_DYLIB_PATH",
+                dir.display()
+            )
+        })?;
     ort::init_from(&lib).map_err(|e| e.to_string())?.commit();
     Ok(())
 }

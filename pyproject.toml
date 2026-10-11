@@ -13,3 +13,9 @@ dependencies = [
 
 [tool.uv]
 package = false
+# `task onnxruntime` installs this and copies the libraries next to the binary.
+[dependency-groups]
+onnxruntime = [
+    "onnxruntime-gpu==1.31.0; platform_machine == 'x86_64'",
+    "onnxruntime-gpu @ https://github.com/ultralytics/assets/releases/download/v0.0.0/onnxruntime_gpu-1.24.0-cp312-cp312-linux_aarch64.whl ; platform_machine == 'aarch64'",
+]
