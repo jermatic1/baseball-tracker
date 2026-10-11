@@ -7,7 +7,7 @@ Tracker is a real-time hitting data system. It measures exit velocity, launch an
 - Luxonis OAK-D (RVC2) on a USB 3 port.
 - Linux on x86_64, or a Jetson Orin Nano with JetPack 7.
 - A home plate in view of the camera. A batter's box mat with an integrated plate works.
-- To train the ball detector: a CUDA or ROCm GPU and [`uv`](https://docs.astral.sh/uv/).
+- To train the ball detector: a CUDA or ROCm GPU.
 
 ## Install
 
@@ -23,10 +23,10 @@ sudo systemctl restart ssh
 Then install over ssh:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/tools/jetson-install.sh | bash -s -- jermatic1/baseball-tracker
+curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/install.sh | sh
 ```
 
-This installs the runtime libraries, the ONNX Runtime GPU package, the camera udev rule, and the latest release into `~/tracker`.
+This installs the runtime libraries, the camera udev rule, and the latest release into `~/tracker`. `TRACKER_INSTALL` chooses another directory.
 
 ### From source
 
@@ -35,12 +35,11 @@ sudo apt install build-essential clang libclang-dev cmake ninja-build pkg-config
   autoconf automake autoconf-archive libtool libudev-dev libssl-dev nasm libdw-dev libelf-dev
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sh -c "$(curl -sL https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
+curl -LsSf https://astral.sh/uv/install.sh | sh
 task release
 ```
 
-The first build compiles the camera library and takes a while. The result is `dist/release/tracker`, one executable for everything.
-
-Detection runs on the GPU through ONNX Runtime. On the Jetson, install the `onnxruntime-gpu` wheel from the [Ultralytics Jetson guide](https://docs.ultralytics.com/guides/nvidia-jetson/) with pip. Without a GPU runtime the detector runs on the CPU.
+The first build compiles the camera library and takes a while. The result is `dist/release/tracker`, one executable for everything. Detection runs on the GPU through ONNX Runtime, or on the CPU without one.
 
 Install the camera udev rule once and replug the camera, or the device is root-only. Do not run the tracker as root.
 

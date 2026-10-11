@@ -9,12 +9,9 @@ name = "tracker"
 path = "src/main.rs"
 
 [features]
-default = ["nvidia"]
+default = ["detect"]
 oak = ["device/oak", "detect"]
-detect = ["dep:ultralytics-inference"]
-nvidia = ["detect", "ultralytics-inference/nvidia"]
-# Load the board's own ONNX Runtime at start instead of linking one in.
-load-dynamic = ["nvidia", "dep:ort", "ort/load-dynamic"]
+detect = ["dep:ultralytics-inference", "ultralytics-inference/nvidia", "dep:ort", "ort/load-dynamic"]
 
 [dependencies]
 axum = "0.8"

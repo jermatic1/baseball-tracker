@@ -1,8 +1,8 @@
-# Build the tracker for the Jetson (aarch64, JetPack 7 = Ubuntu 24.04) on
+# Build the tracker for the Jetson (aarch64, JetPack 7.2 = Ubuntu 24.04) on
 # GitHub's arm64 runners. The first run compiles depthai-core and its vcpkg
 # dependencies, which takes about an hour; the cache makes later runs short.
-# The bundle loads the board's ONNX Runtime at start, so none is linked here.
-# Every push to main replaces the bundle on the "latest" release.
+# Every push to main replaces the bundle on the "latest" release, which
+# install.sh fetches.
 name: jetson
 
 on:
@@ -26,9 +26,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential clang libclang-dev cmake ninja-build pkg-config \
             python3 autoconf automake autoconf-archive libtool libudev-dev \
-            libssl-dev nasm libdw-dev libelf-dev curl git zip
+            libssl-dev nasm libdw-dev libelf-dev curl git
+          sh -c "$(curl -sL https://taskfile.dev/install.sh)" -- -d -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
 
       - name: Cache depthai-core and cargo
         uses: actions/cache@v4
@@ -41,21 +44,21 @@ jobs:
           key: jetson-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: jetson-${{ runner.arch }}-
 
-      - name: Build and bundle
+      - name: Build
         env:
           CARGO_BUILD_JOBS: 3
           CMAKE_BUILD_PARALLEL_LEVEL: 3
-        run: tools/bundle.sh dist/jetson
+        run: task release
 
       - name: Package
         run: |
-          echo "built $(git rev-parse --short HEAD)" > dist/jetson/VERSION
-          cd dist && zip -r tracker-jetson-aarch64.zip jetson
+          echo "built $(git rev-parse --short HEAD)" > dist/release/VERSION
+          tar -C dist/release -czf dist/tracker-jetson-aarch64.tar.gz .
 
       - uses: actions/upload-artifact@v4
         with:
           name: tracker-jetson-aarch64
-          path: dist/tracker-jetson-aarch64.zip
+          path: dist/tracker-jetson-aarch64.tar.gz
 
       - name: Move the latest tag to this commit
         run: |
@@ -68,4 +71,4 @@ jobs:
           tag_name: latest
           name: Latest build
           body: Built from ${{ github.sha }}.
-          files: dist/tracker-jetson-aarch64.zip
+          files: dist/tracker-jetson-aarch64.tar.gz
