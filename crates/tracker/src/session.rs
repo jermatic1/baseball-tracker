@@ -193,11 +193,12 @@ impl Clip {
         f.seek(SeekFrom::Start((i * n * 2) as u64))?;
         let mut bytes = vec![0u8; n * 2];
         f.read_exact(&mut bytes)?;
-        let mut out = vec![0u16; n];
-        for (i, chunk) in bytes.chunks_exact(2).enumerate() {
-            out[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
-        }
-        Ok(out)
+        Ok(bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
+            .collect())
     }
 
     /// Device timestamps per frame. Zeros when the clip has none.
@@ -209,9 +210,11 @@ impl Clip {
         }
         let bytes = fs::read(path)?;
         Ok(bytes
-            .chunks_exact(16)
+            .as_chunks::<16>()
+            .0
+            .iter()
             .take(n)
-            .map(|c| u64::from_le_bytes(c[0..8].try_into().unwrap()))
+            .map(|c| u64::from_le_bytes(c[..8].try_into().unwrap()))
             .collect())
     }
 }
