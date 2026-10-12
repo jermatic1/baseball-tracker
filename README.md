@@ -26,7 +26,14 @@ Then install over ssh:
 curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/install.sh | sh
 ```
 
-This installs the runtime libraries, the camera udev rule, and the latest release into `~/tracker`. `TRACKER_INSTALL` chooses another directory.
+This installs the JetPack GPU libraries, the camera udev rule, and the latest release into `~/tracker`. `TRACKER_INSTALL` chooses another directory.
+
+On WiFi, turn off power saving, which otherwise stalls ssh and the page:
+
+```bash
+printf '[connection]\nwifi.powersave = 2\n' | sudo tee /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+sudo systemctl restart NetworkManager
+```
 
 ### From source
 

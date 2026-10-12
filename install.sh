@@ -1,6 +1,6 @@
 #!/bin/sh
-# Install the tracker on a Jetson: runtime libraries, the OAK udev rule, and the
-# latest bundle from GitHub. TRACKER_INSTALL sets the directory (default ~/tracker).
+# Install the tracker on a Jetson: system libraries including the JetPack GPU runtime,
+# the OAK udev rule, and the latest bundle from GitHub. TRACKER_INSTALL sets the directory.
 set -eu
 
 main() {
@@ -12,16 +12,22 @@ main() {
     echo "the prebuilt tracker is for Linux on aarch64 (Jetson); build from source instead" >&2
     exit 1
   fi
-  [ -e /etc/nv_tegra_release ] || echo "warning: not a Jetson, the detector will not have a GPU" >&2
+  if [ ! -e /etc/nv_tegra_release ]; then
+    echo "the prebuilt tracker needs a Jetson running JetPack 7.2; build from source instead" >&2
+    exit 1
+  fi
   for tool in curl tar; do
     command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
   done
 
   missing=""
-  for pair in libdw.so.1:libdw1 libelf.so.1:libelf1 libudev.so.1:libudev1 libssl.so.3:libssl3t64; do
+  for pair in libdw.so.1:libdw1 libelf.so.1:libelf1 libudev.so.1:libudev1 libssl.so.3:libssl3t64 \
+    libcudart.so.13:cuda-cudart-13-2 libcublas.so.13:libcublas-13-2 libcufft.so.12:libcufft-13-2 \
+    libcudnn.so.9:libcudnn9-cuda-13 libnvinfer.so.10:tensorrt-libs; do
     /sbin/ldconfig -p | grep -q "${pair%%:*}" || missing="$missing ${pair#*:}"
   done
   if [ -n "$missing" ]; then
+    echo "installing$missing"
     sudo apt-get update
     # shellcheck disable=SC2086
     sudo apt-get install -y --no-install-recommends $missing
