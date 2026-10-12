@@ -20,6 +20,13 @@ sudo ssh-keygen -A
 sudo systemctl restart ssh
 ```
 
+Ubuntu turns on WiFi power saving by default, which makes ssh and the tracker's web page stall for up to a second at a time. On a board that uses WiFi, turn it off:
+
+```bash
+printf '[connection]\nwifi.powersave = 2\n' | sudo tee /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+sudo systemctl restart NetworkManager
+```
+
 Then connect over ssh and continue with the prebuilt install below.
 
 ### Prebuilt (Jetson)
@@ -30,7 +37,7 @@ Every push to `main` rebuilds the bundle for JetPack 7.2 and attaches it to the 
 curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/install.sh | sh
 ```
 
-This installs the runtime libraries and the camera udev rule, then unpacks the tracker with its ONNX Runtime into `~/tracker`. Set `TRACKER_INSTALL` to choose another directory.
+This installs the system libraries the tracker needs, including the CUDA, cuDNN, and TensorRT libraries from JetPack, and the camera udev rule, then unpacks the tracker with its ONNX Runtime into `~/tracker`. Set `TRACKER_INSTALL` to choose another directory.
 
 ### From source
 

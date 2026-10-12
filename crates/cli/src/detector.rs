@@ -4,10 +4,11 @@
 
 use image::{DynamicImage, GrayImage};
 use tracker::{BallBox, Eye, Rectifier, StereoCalib};
-use ultralytics_inference::YOLOModel;
+use ultralytics_inference::{InferenceConfig, Quantization, YOLOModel};
 
 pub struct Detector {
     yolo: YOLOModel,
+    provider: &'static str,
 }
 
 /// One frame as the detector needs it. `depth` is a saved depth map, used
@@ -25,14 +26,16 @@ pub struct FrameView<'a> {
 impl Detector {
     pub fn load(model: &str) -> Result<Self, String> {
         load_runtime()?;
+        let provider = available_provider();
         ultralytics_inference::logging::set_verbose(false);
-        let yolo = YOLOModel::load(model).map_err(|e| e.to_string())?;
-        println!("detector {model} on {}", yolo.execution_provider());
-        Ok(Self { yolo })
+        let config = InferenceConfig::default().with_quantize(Quantization::Fp16);
+        let yolo = YOLOModel::load_with_config(model, config).map_err(|e| e.to_string())?;
+        println!("detector {model} on {provider}");
+        Ok(Self { yolo, provider })
     }
 
     pub fn provider(&self) -> &str {
-        self.yolo.execution_provider()
+        self.provider
     }
 
     pub fn detect(&mut self, frame: &FrameView) -> Result<Vec<BallBox>, String> {
@@ -171,4 +174,30 @@ fn load_runtime() -> Result<(), String> {
         })?;
     ort::init_from(&lib).map_err(|e| e.to_string())?.commit();
     Ok(())
+}
+
+/// The first provider ONNX Runtime can open, in the order the model loader
+/// registers them. The model loader falls back to the CPU silently, so a GPU
+/// provider missing its CUDA, cuDNN, or TensorRT libraries is reported here.
+fn available_provider() -> &'static str {
+    let gpus = [
+        (
+            ort::ep::TensorRT::default().build(),
+            "TensorRTExecutionProvider",
+        ),
+        (ort::ep::CUDA::default().build(), "CUDAExecutionProvider"),
+    ];
+    for (ep, name) in gpus {
+        let probe = ort::session::Session::builder()
+            .map_err(|e| e.to_string())
+            .and_then(|b| {
+                b.with_execution_providers([ep.error_on_failure()])
+                    .map_err(|e| e.to_string())
+            });
+        match probe {
+            Ok(_) => return name,
+            Err(e) => eprintln!("warning: {name} unavailable: {e}"),
+        }
+    }
+    "CPUExecutionProvider"
 }

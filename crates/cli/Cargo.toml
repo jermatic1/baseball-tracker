@@ -11,7 +11,7 @@ path = "src/main.rs"
 [features]
 default = ["detect"]
 oak = ["device/oak", "detect"]
-detect = ["dep:ultralytics-inference", "ultralytics-inference/nvidia", "dep:ort", "ort/load-dynamic"]
+detect = ["dep:ultralytics-inference", "ultralytics-inference/nvidia", "dep:ort", "ort/load-dynamic", "ort/cuda", "ort/tensorrt"]
 
 [dependencies]
 axum = "0.8"
