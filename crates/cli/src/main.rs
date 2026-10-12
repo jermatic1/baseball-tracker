@@ -6,9 +6,10 @@ mod detect;
 #[cfg(feature = "detect")]
 mod detector;
 mod error;
+mod hub;
 mod jpeg;
 mod label;
-mod live;
+mod protocol;
 #[cfg(feature = "detect")]
 mod replay;
 mod review;
@@ -24,7 +25,6 @@ use calibrate::calibrate;
 use capture::capture;
 use convert::print_estimate;
 use label::label;
-use live::live;
 use review::review;
 
 #[derive(Parser)]
@@ -57,11 +57,6 @@ enum Command {
         #[arg(long, default_value = "0.0.0.0:7881")]
         bind: SocketAddr,
     },
-    Live {
-        session: PathBuf,
-        #[arg(long)]
-        replay: bool,
-    },
     Synth {
         session: PathBuf,
     },
@@ -72,8 +67,9 @@ enum Command {
         #[arg(long)]
         clip: Option<String>,
     },
-    /// Run a live session: find the ball in every frame, measure each hit
-    /// or throw as it happens, post it, and save the clip.
+    /// Run a live session: serve the socket, and while a client is
+    /// connected find the ball in every frame, measure each hit or throw,
+    /// broadcast it, and save the clip.
     Watch {
         session: PathBuf,
         #[arg(long, default_value = "models/ball.onnx")]
@@ -102,7 +98,6 @@ async fn run() -> Result<(), String> {
         Command::Calibrate { session } => calibrate(session),
         Command::Review { session, bind } => review(session, bind).await,
         Command::Label { session, bind } => label(session, bind).await,
-        Command::Live { session, replay } => live(session, replay).await,
         Command::Synth { session } => synth(session),
         Command::Detect {
             session,

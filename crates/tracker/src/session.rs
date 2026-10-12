@@ -140,7 +140,6 @@ pub struct HitRecord {
     pub contact: Option<Contact>,
     pub samples: usize,
     pub confident: bool,
-    pub posted: bool,
 }
 
 impl HitRecord {

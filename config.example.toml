@@ -20,9 +20,6 @@ pitch_deg = 30.5
 yaw_deg = 23.0
 positive_depth_is_rf = true
 
-[simulator]
-launch_url = "http://127.0.0.1:7878/launch"
-
 [stereo]
 # The raw eyes are not rectified; this is the disparity they show at
 # infinity. Calibrate from one measured distance: measured disparity minus

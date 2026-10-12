@@ -2,179 +2,188 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>capture</title>
+<title>tracker</title>
 <style>
 body { font: 14px sans-serif; background: #111; color: #eee; margin: 16px; }
 img { background: #000; max-width: 100%; display: block; }
 #view { position: relative; display: inline-block; }
-#overlay, #boxes { position: absolute; left: 0; top: 0; pointer-events: none; }
-#live { margin-top: 4px; font-family: monospace; color: #fc6; }
+#boxes, #overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
 button { margin: 4px 4px 0 0; padding: 6px 10px; }
 .row { margin-top: 12px; }
+.mono { font-family: monospace; margin-top: 6px; }
+#camera { color: #9c9; }
+#detector { color: #fc6; }
+#calibration { color: #6cf; }
 #status { margin-top: 8px; min-height: 1.2em; }
-#stats { margin-top: 6px; font-family: monospace; color: #9c9; }
+table { border-collapse: collapse; margin-top: 12px; font-family: monospace; }
+td, th { padding: 2px 10px; text-align: right; border-bottom: 1px solid #333; }
+th { color: #aaa; font-weight: normal; }
 </style>
 </head>
 <body>
-<h1>Capture</h1>
-<p>Manual exposure. Auto-exposure is off.</p>
+<h1>Tracker</h1>
 <div id="view">
   <img id="preview" alt="live preview" width="640">
   <canvas id="boxes" width="640" height="400"></canvas>
   <canvas id="overlay" width="640" height="400"></canvas>
 </div>
-<div id="stats">waiting for stats</div>
-<div id="live"></div>
+<div id="camera" class="mono">connecting</div>
+<div id="detector" class="mono"></div>
+<div id="calibration" class="mono"></div>
 <div class="row">
-  <button data-act="exposure" data-delta="-100">Exposure −100 µs</button>
-  <button data-act="exposure" data-delta="100">Exposure +100 µs</button>
-  <button data-act="gain" data-delta="-10">ISO −10</button>
-  <button data-act="gain" data-delta="10">ISO +10</button>
+  <button data-set="exposure_us" data-delta="-100">Exposure −100 µs</button>
+  <button data-set="exposure_us" data-delta="100">Exposure +100 µs</button>
+  <button data-set="gain" data-delta="-100">ISO −100</button>
+  <button data-set="gain" data-delta="100">ISO +100</button>
+  <button data-set="ir_flood" data-delta="-0.2">Flood −20%</button>
+  <button data-set="ir_flood" data-delta="0.2">Flood +20%</button>
+  <button data-set="ir_dot" data-delta="-0.2">Dot −20%</button>
+  <button data-set="ir_dot" data-delta="0.2">Dot +20%</button>
 </div>
-<div class="row">
-  <button data-act="flood" data-delta="-20">Flood −20%</button>
-  <button data-act="flood" data-delta="20">Flood +20%</button>
-  <button data-act="dot" data-delta="-20">Dot −20%</button>
-  <button data-act="dot" data-delta="20">Dot +20%</button>
-</div>
-<p>Both IR lights start off. Flood is the illuminator. Dot is the laser projector.</p>
-<p>The right camera is recorded with the left. Depth is written when you stop.</p>
 <div class="row">
   <button id="record">Record</button>
   <button id="stop" disabled>Stop</button>
-  <button id="calibrate">Calibrate from plate</button>
+  <button id="calibrate">Calibrate</button>
+  <button id="apply" hidden>Apply</button>
+  <button id="cancel" hidden>Cancel</button>
 </div>
-<p>Calibrate with the plate clear and no ball on it. The detected plate is drawn green, the fitted pose yellow.</p>
-<p>Click Record, walk over and hit, then click Stop.</p>
+<p>Calibrate with the plate clear and no ball on it. Detected plate in green, fitted pose in yellow. Capture pauses while calibrating.</p>
 <div id="status"></div>
+<table id="events">
+  <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>pitch</th><th>contact</th><th>samples</th></tr></thead>
+  <tbody></tbody>
+</table>
 <script>
 const img = document.getElementById("preview");
-const status = document.getElementById("status");
+const statusEl = document.getElementById("status");
+const cameraEl = document.getElementById("camera");
+const detectorEl = document.getElementById("detector");
+const calibEl = document.getElementById("calibration");
+const events = document.querySelector("#events tbody");
+let ws = null;
 let url = null;
-let note = "";
-async function tick() {
-  const r = await fetch("/preview.jpg", { cache: "no-store" });
-  if (!r.ok) {
-    if (!note) status.textContent = "no frame yet";
-    return;
-  }
-  if (!note) status.textContent = "live";
-  const blob = await r.blob();
-  const next = URL.createObjectURL(blob);
-  img.src = next;
-  if (url) URL.revokeObjectURL(url);
-  url = next;
+let controls = { exposure_us: 600, gain: 1600, ir_flood: 0, ir_dot: 0 };
+let retry = 1000;
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "blob";
+  ws.onopen = () => {
+    retry = 1000;
+    send({ type: "hello", client: "page" });
+    send({ type: "preview", enabled: true });
+    statusEl.textContent = "";
+  };
+  ws.onmessage = (e) => {
+    if (e.data instanceof Blob) {
+      const next = URL.createObjectURL(e.data);
+      img.src = next;
+      if (url) URL.revokeObjectURL(url);
+      url = next;
+      return;
+    }
+    handle(JSON.parse(e.data));
+  };
+  ws.onclose = () => {
+    cameraEl.textContent = "disconnected, retrying";
+    setTimeout(connect, retry);
+    retry = Math.min(retry * 2, 10000);
+  };
 }
-setInterval(tick, 100);
-tick();
-const stats = document.getElementById("stats");
-const live = document.getElementById("live");
-const boxes = document.getElementById("boxes");
+function send(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+function handle(m) {
+  if (m.type === "status") {
+    const c = m.camera;
+    cameraEl.textContent = c
+      ? `left ${c.left_fps} fps, right ${c.right_fps} fps, pairs ${c.pair_fps} fps | gaps L${c.left_gaps} R${c.right_gaps}, unpaired ${c.unpaired}` +
+        ` | clients ${m.clients.join(", ") || "none"} | ${m.capturing ? "capturing" : "idle"}` +
+        ` | ${m.exposure_us} µs, ISO ${m.gain}, flood ${Math.round(m.ir_flood * 100)}%, dot ${Math.round(m.ir_dot * 100)}%`
+      : "waiting for the camera";
+    controls = { exposure_us: m.exposure_us, gain: m.gain, ir_flood: m.ir_flood, ir_dot: m.ir_dot };
+    const d = m.detector;
+    detectorEl.textContent = d
+      ? `detector ${d.state} | ${d.fps.toFixed(0)} fps on ${d.provider}, ${d.lag} behind, ${d.drops} dropped | clips ${d.clips}` +
+        (d.last_event ? ` | ${d.last_event}` : "")
+      : "";
+    drawBoxes(d ? d.boxes : []);
+    document.getElementById("record").disabled = m.recording;
+    document.getElementById("stop").disabled = !m.recording;
+    setCalibrating(m.calibrating);
+    if (!m.calibrating) {
+      calibEl.textContent = `mount: ${m.mount.distance_from_plate_m.toFixed(2)} m from plate, ${m.mount.height_m.toFixed(2)} m high, lateral ${m.mount.lateral_offset_m.toFixed(2)} m`;
+    }
+  } else if (m.type === "event") {
+    const r = m.record;
+    const row = document.createElement("tr");
+    const num = (v, d) => (v == null ? "-" : v.toFixed(d));
+    [m.clip, r.kind, r.hit_type || "-", num(r.exit_velocity_mph, 1), num(r.launch_angle_deg, 1),
+     num(r.spray_angle_deg, 1), num(r.pitch_mph, 1), r.contact ? r.contact.kind : "-", r.samples]
+      .forEach((v) => { const td = document.createElement("td"); td.textContent = v; row.appendChild(td); });
+    events.prepend(row);
+    while (events.children.length > 20) events.lastChild.remove();
+  } else if (m.type === "calibration") {
+    drawPlate(m);
+    if (!m.found) {
+      calibEl.textContent = "calibrating: plate not found";
+    } else {
+      const p = m.mount;
+      calibEl.textContent = `${m.applied ? "applied" : "calibrating"}: rms ${m.rms_px.toFixed(2)} px, ` +
+        `${p.distance_from_plate_m.toFixed(2)} m from plate, ${p.height_m.toFixed(2)} m high, lateral ${p.lateral_offset_m.toFixed(2)} m, yaw ${p.yaw_deg.toFixed(1)}, pitch ${p.pitch_deg.toFixed(1)}`;
+    }
+  } else if (m.type === "error") {
+    statusEl.textContent = m.message;
+  }
+}
+function fit(canvas) {
+  canvas.width = img.naturalWidth || 640;
+  canvas.height = img.naturalHeight || 400;
+  canvas.style.width = img.clientWidth + "px";
+  canvas.style.height = img.clientHeight + "px";
+  return canvas.getContext("2d");
+}
 function drawBoxes(list) {
-  boxes.width = img.naturalWidth || 640;
-  boxes.height = img.naturalHeight || 400;
-  boxes.style.width = img.clientWidth + "px";
-  boxes.style.height = img.clientHeight + "px";
-  const ctx = boxes.getContext("2d");
-  ctx.clearRect(0, 0, boxes.width, boxes.height);
+  const ctx = fit(document.getElementById("boxes"));
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   ctx.strokeStyle = "#f80";
   ctx.lineWidth = 2;
   list.forEach((b) => ctx.strokeRect(b[0], b[1], b[2], b[3]));
 }
-async function pollStats() {
-  const r = await fetch("/api/stats", { cache: "no-store" });
-  if (!r.ok) return;
-  const s = await r.json();
-  if (!s) return;
-  if (s.left_fps !== undefined) {
-    stats.textContent =
-      `left ${s.left_fps} fps, right ${s.right_fps} fps, pairs ${s.pair_fps} fps | ` +
-      `gaps L${s.left_gaps} R${s.right_gaps}, unpaired ${s.unpaired}, record drops ${s.record_drops}`;
-  }
-  if (s.live) {
-    const l = s.live;
-    live.textContent =
-      `watch: ${l.state} | detector ${l.fps.toFixed(0)} fps on ${l.provider}, ` +
-      `${l.lag} frames behind, ${l.drops} dropped | clips ${l.clips}` +
-      (l.last_event ? ` | ${l.last_event}` : "");
-    drawBoxes(l.boxes || []);
-  }
-}
-setInterval(pollStats, 250);
-pollStats();
-async function post(path, body) {
-  const r = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await r.text();
-  note = r.ok ? text : (r.status + " " + text);
-  status.textContent = note;
-}
-document.querySelectorAll("[data-act]").forEach((b) => {
-  b.onclick = () => post("/api/" + b.dataset.act, { delta: Number(b.dataset.delta) });
-});
-document.getElementById("record").onclick = async () => {
-  note = "Recording. Hit, then click Stop.";
-  status.textContent = note;
-  const r = await fetch("/api/record", { method: "POST" });
-  const text = await r.text();
-  if (!r.ok) {
-    note = r.status + " " + text;
-    status.textContent = note;
-    return;
-  }
-  document.getElementById("record").disabled = true;
-  document.getElementById("stop").disabled = false;
-};
-document.getElementById("calibrate").onclick = async () => {
-  const overlay = document.getElementById("overlay");
-  const octx = overlay.getContext("2d");
-  overlay.width = img.naturalWidth || 640;
-  overlay.height = img.naturalHeight || 400;
-  overlay.style.width = img.clientWidth + "px";
-  overlay.style.height = img.clientHeight + "px";
-  octx.clearRect(0, 0, overlay.width, overlay.height);
-  const r = await fetch("/api/calibrate", { method: "POST" });
-  const text = await r.text();
-  if (!r.ok) {
-    note = r.status + " " + text;
-    status.textContent = note;
-    return;
-  }
-  const c = JSON.parse(text);
-  const draw = (pts, color) => {
-    octx.strokeStyle = color;
-    octx.lineWidth = 2;
-    octx.beginPath();
-    pts.forEach((p, i) => (i ? octx.lineTo(p[0], p[1]) : octx.moveTo(p[0], p[1])));
-    octx.closePath();
-    octx.stroke();
+function drawPlate(m) {
+  const ctx = fit(document.getElementById("overlay"));
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  const poly = (pts, color) => {
+    if (!pts) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+    ctx.closePath();
+    ctx.stroke();
   };
-  draw(c.corners, "#0f0");
-  draw(c.reprojected, "#ff0");
-  const m = c.mount;
-  note = `plate fit rms ${c.rms_px.toFixed(2)} px: distance ${m.distance_from_plate_m.toFixed(2)} m, ` +
-    `height ${m.height_m.toFixed(2)} m, lateral ${m.lateral_offset_m.toFixed(2)} m, ` +
-    `yaw ${m.yaw_deg.toFixed(1)}, pitch ${m.pitch_deg.toFixed(1)}. Saved to the session config.`;
-  status.textContent = note;
-};
-document.getElementById("stop").onclick = async () => {
-  const button = document.getElementById("stop");
-  button.disabled = true;
-  note = "Saving…";
-  status.textContent = note;
-  try {
-    const r = await fetch("/api/stop", { method: "POST" });
-    const text = await r.text();
-    note = r.ok ? text : (r.status + " " + text);
-  } catch (e) {
-    note = "Stop failed: " + e;
-  }
-  status.textContent = note;
-  document.getElementById("record").disabled = false;
-};
+  poly(m.corners, "#0f0");
+  poly(m.reprojected, "#ff0");
+}
+function setCalibrating(on) {
+  document.getElementById("calibrate").hidden = on;
+  document.getElementById("apply").hidden = !on;
+  document.getElementById("cancel").hidden = !on;
+  if (!on) fit(document.getElementById("overlay")).clearRect(0, 0, 640, 400);
+}
+document.querySelectorAll("[data-set]").forEach((b) => {
+  b.onclick = () => {
+    const key = b.dataset.set;
+    const value = controls[key] + Number(b.dataset.delta);
+    send({ type: "set", [key]: key === "exposure_us" || key === "gain" ? Math.round(value) : value });
+  };
+});
+document.getElementById("record").onclick = () => send({ type: "record", action: "start" });
+document.getElementById("stop").onclick = () => send({ type: "record", action: "stop" });
+document.getElementById("calibrate").onclick = () => send({ type: "calibrate", action: "start" });
+document.getElementById("apply").onclick = () => send({ type: "calibrate", action: "apply" });
+document.getElementById("cancel").onclick = () => send({ type: "calibrate", action: "stop" });
+connect();
 </script>
 </body>
 </html>
