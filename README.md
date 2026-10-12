@@ -1,6 +1,6 @@
 # Tracker
 
-Tracker is a real-time hitting data system. It measures exit velocity, launch angle, spray angle, and pitch speed on every swing from a stereo camera over home plate, and sends each hit to a simulator as it happens.
+Tracker is a real-time hitting data system. It measures exit velocity, launch angle, spray angle, and pitch speed on every swing from a stereo camera over home plate, and streams each hit to connected simulators as it happens.
 
 ## Requirements
 
@@ -62,11 +62,15 @@ Everything for one camera setup lives in a session directory under `sessions/`.
 1. **Run.** `task run SESSION=cage-1`, or `./tracker watch sessions/cage-1` with the prebuilt executable, serves the camera page on port 7880.
 2. **Calibrate, once per camera placement.** With the plate clear, click Calibrate on the page.
 3. **Train the detector, once.** `task label SESSION=cage-1` serves a page on port 7881 for clicking the ball in recorded frames, and `task train SESSION=cage-1` writes `models/ball.onnx`, which loads on start.
-4. **Hit.** Every moving ball is measured, posted to the simulator, and saved as a clip. A ball resting on the tee is ignored.
+4. **Hit.** While a page or simulator is connected, every moving ball is measured, sent to the connected simulators, and saved as a clip. A ball resting on the tee is ignored.
 5. **Review.** `task review SESSION=cage-1` serves a page on port 7879 that plays each clip with detections drawn and lists its events.
 
-`task replay SESSION=cage-1` plays a recorded session back without a camera.
+`task replay SESSION=cage-1` plays a recorded session back through the live path without a camera.
 
 ## Configuration
 
 `config.toml` in the session directory. `config.example.toml` documents every setting.
+
+## Simulators
+
+Simulators connect to the tracker and receive every hit over a WebSocket. The protocol is described in [docs/protocol.md](docs/protocol.md).

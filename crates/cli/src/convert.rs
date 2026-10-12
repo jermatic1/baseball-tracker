@@ -10,16 +10,6 @@ pub fn to_stored(frame: device::Frame) -> tracker::StoredFrame {
     }
 }
 
-pub fn to_estimate(hit: &tracker::HitRecord) -> tracker::HitEstimate {
-    tracker::HitEstimate {
-        exit_velocity_mph: hit.exit_velocity_mph,
-        launch_angle_deg: hit.launch_angle_deg,
-        spray_angle_deg: hit.spray_angle_deg,
-        samples: hit.samples,
-        confident: hit.confident,
-    }
-}
-
 pub fn config_summary(cfg: &tracker::SessionConfig) -> serde_json::Value {
     serde_json::json!({
         "capture": {
@@ -36,9 +26,6 @@ pub fn config_summary(cfg: &tracker::SessionConfig) -> serde_json::Value {
             "pitch_deg": cfg.mount.pitch_deg,
             "yaw_deg": cfg.mount.yaw_deg,
             "positive_depth_is_rf": cfg.mount.positive_depth_is_rf,
-        },
-        "simulator": {
-            "launch_url": cfg.simulator.launch_url,
         },
     })
 }
@@ -65,7 +52,7 @@ pub fn print_hit(hit: &tracker::HitRecord) {
         .map(|c| format!("{:?}", c.kind).to_lowercase())
         .unwrap_or_else(|| "-".into());
     println!(
-        "{} {} {} #{} frames {}..{} ev={:.1} pitch={} launch={:.1} spray={:.1} contact={} samples={} confident={} posted={}",
+        "{} {} {} #{} frames {}..{} ev={:.1} pitch={} launch={:.1} spray={:.1} contact={} samples={} confident={}",
         hit.clip,
         hit.kind.as_str(),
         hit_type,
@@ -78,7 +65,6 @@ pub fn print_hit(hit: &tracker::HitRecord) {
         hit.spray_angle_deg,
         contact,
         hit.samples,
-        hit.confident,
-        hit.posted
+        hit.confident
     );
 }

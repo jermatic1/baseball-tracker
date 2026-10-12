@@ -24,11 +24,6 @@ pub struct MountConfig {
     pub positive_depth_is_rf: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SimulatorConfig {
-    pub launch_url: String,
-}
-
 /// Event selection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackingConfig {
@@ -92,7 +87,6 @@ impl Default for StereoConfig {
 pub struct SessionConfig {
     pub capture: CaptureConfig,
     pub mount: MountConfig,
-    pub simulator: SimulatorConfig,
     #[serde(default)]
     pub stereo: StereoConfig,
     #[serde(default)]
@@ -118,9 +112,6 @@ impl SessionConfig {
                 pitch_deg: 30.5,
                 yaw_deg: 23.0,
                 positive_depth_is_rf: true,
-            },
-            simulator: SimulatorConfig {
-                launch_url: "http://127.0.0.1:7878/launch".to_string(),
             },
             stereo: StereoConfig {
                 disparity_offset_px: 17.1,

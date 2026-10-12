@@ -1,6 +1,7 @@
 //! A live session: the capture server plus a detector that sees every
 //! frame, a watcher that cuts the windows where a ball moved, and a
-//! coordinator that measures each window, posts hits, and saves it as a clip.
+//! coordinator that measures each window, broadcasts its events, and saves
+//! it as a clip. Detection runs only while a client is connected.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -15,13 +16,14 @@ use tracker::{
     StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
 };
 
-use crate::capture::server::{self, LiveStatus, LiveTap};
+use crate::capture::server::{self, LiveTap};
 use crate::convert::print_hit;
 use crate::detector::{Detector, FrameView};
-use crate::live::post_hits;
+use crate::hub::Hub;
+use crate::protocol::{LiveStatus, ServerMsg};
 
 /// Frames queued for the detector before the newest are dropped: about
-/// three seconds, enough for the TensorRT engine build on a first run.
+/// three seconds.
 const QUEUE: usize = 300;
 
 struct Finished {
@@ -29,16 +31,18 @@ struct Finished {
     episode: Episode,
 }
 
-/// Handles the detector thread shares with the server and the page.
+/// Handles the detector thread shares with the server and its clients.
 struct Shared {
     status: Arc<Mutex<LiveStatus>>,
     sent: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
+    hub: Arc<Hub>,
 }
 
 pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Result<(), String> {
     let session = Session::create(&path).map_err(|e| e.to_string())?;
     let detector = Detector::load(&model)?;
+    let hub = Hub::new(session.config.clone());
     let status = Arc::new(Mutex::new(LiveStatus {
         provider: detector.provider().to_string(),
         state: "idle".into(),
@@ -57,12 +61,14 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
         status: Arc::clone(&status),
         sent: Arc::clone(&tap.sent),
         stop: Arc::clone(&tap.stop),
+        hub: Arc::clone(&hub),
     };
     let watch_status = Arc::clone(&status);
     let c = session.config.capture.clone();
     let coordinator = tokio::spawn(coordinate(
         done_rx,
         session.clone(),
+        Arc::clone(&hub),
         Arc::clone(&status),
         Intrinsics::from_fov(c.width, c.height, 80.0, 55.0),
     ));
@@ -78,19 +84,19 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
             let calib = crate::capture::stereo_calib(&session, device_json.as_deref());
             let cam = crate::replay::ClipCamera::open(&source)?;
             spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
-            server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap)).await?;
+            server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap), hub).await?;
         }
         None => {
             #[cfg(not(feature = "oak"))]
             {
-                let _ = (frame_rx, done_tx, shared);
+                let _ = (frame_rx, done_tx, shared, hub);
                 return Err("rebuild with --features oak, or pass --from <session>".into());
             }
             #[cfg(feature = "oak")]
             {
                 let (cam, calib) = crate::capture::open_oak(&session)?;
                 spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
-                server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap)).await?;
+                server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap), hub).await?;
             }
         }
     }
@@ -128,7 +134,8 @@ fn spawn_detector(
 }
 
 /// Every frame: detect, feed the watcher, keep the pre-roll ring, and write
-/// the open episode's frames to its clip as they arrive.
+/// the open episode's frames to its clip as they arrive. While no client is
+/// connected, frames are counted and dropped.
 fn detect_loop(
     rx: Receiver<Arc<StoredFrame>>,
     mut detector: Detector,
@@ -137,7 +144,12 @@ fn detect_loop(
     shared: Shared,
     done: UnboundedSender<Finished>,
 ) -> Result<(), String> {
-    let Shared { status, sent, stop } = shared;
+    let Shared {
+        status,
+        sent,
+        stop,
+        hub,
+    } = shared;
     let cfg: WatchConfig = session.config.watch.clone();
     let c = session.config.capture.clone();
     let rectifier = session.rectifier(c.width, c.height);
@@ -150,12 +162,42 @@ fn detect_loop(
     let mut meter = (Instant::now(), 0u32);
     let mut last_status = Instant::now();
     let mut first = Some(Instant::now());
+    let mut report =
+        |watcher: &Watcher, boxes: Vec<[f64; 4]>, taken: u64, meter: &mut (Instant, u32)| {
+            if last_status.elapsed() < Duration::from_millis(200) {
+                return;
+            }
+            let dt = meter.0.elapsed().as_secs_f64();
+            if let Ok(mut s) = status.lock() {
+                s.fps = meter.1 as f64 / dt.max(1e-3);
+                s.lag = sent.load(Ordering::Relaxed).saturating_sub(taken);
+                s.state = match watcher.state() {
+                    WatchState::Idle => "idle".into(),
+                    WatchState::Episode => "episode".into(),
+                };
+                s.boxes = boxes;
+            }
+            if dt >= 1.0 {
+                *meter = (Instant::now(), 0);
+            }
+            last_status = Instant::now();
+        };
     while let Ok(frame) = rx.recv() {
         taken += 1;
         if stop.load(Ordering::Relaxed) && watcher.state() == WatchState::Idle {
             let skipped = sent.load(Ordering::Relaxed).saturating_sub(taken) + 1;
             println!("stopping with no episode open; skipping {skipped} queued frames");
             break;
+        }
+        if !hub.capturing() {
+            if let Some(episode) = gate_closed(&mut watcher) {
+                finish_episode(&session, writer.take(), episode, &c, &done);
+            }
+            ring.clear();
+            index += 1;
+            meter.1 += 1;
+            report(&watcher, Vec::new(), taken, &mut meter);
+            continue;
         }
         if first.is_some() {
             println!(
@@ -217,27 +259,19 @@ fn detect_loop(
         }
         index += 1;
         meter.1 += 1;
-        if last_status.elapsed() >= Duration::from_millis(200) {
-            let dt = meter.0.elapsed().as_secs_f64();
-            if let Ok(mut s) = status.lock() {
-                s.fps = meter.1 as f64 / dt.max(1e-3);
-                s.lag = sent.load(Ordering::Relaxed).saturating_sub(taken);
-                s.state = match watcher.state() {
-                    WatchState::Idle => "idle".into(),
-                    WatchState::Episode => "episode".into(),
-                };
-                s.boxes = boxes;
-            }
-            if dt >= 1.0 {
-                meter = (Instant::now(), 0);
-            }
-            last_status = Instant::now();
-        }
+        report(&watcher, boxes, taken, &mut meter);
     }
     if let Some(episode) = watcher.flush() {
         finish_episode(&session, writer.take(), episode, &c, &done);
     }
     Ok(())
+}
+
+/// When capture is gated off, an open episode ends where it is.
+fn gate_closed(watcher: &mut Watcher) -> Option<Episode> {
+    (watcher.state() == WatchState::Episode)
+        .then(|| watcher.flush())
+        .flatten()
 }
 
 /// Close the clip for a finished window and hand it to the coordinator.
@@ -274,14 +308,14 @@ fn finish_episode(
     }
 }
 
-/// Measure each finished window, record and post its events.
+/// Measure each finished window, record its events, and broadcast them.
 async fn coordinate(
     mut rx: UnboundedReceiver<Finished>,
     session: Session,
+    hub: Arc<Hub>,
     status: Arc<Mutex<LiveStatus>>,
     intr: Intrinsics,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
     while let Some(Finished { id, episode }) = rx.recv().await {
         let frames = episode.as_clip();
         session
@@ -292,7 +326,8 @@ async fn coordinate(
                 },
             )
             .map_err(|e| e.to_string())?;
-        let records = process_clip(&id, &frames, &session.config, &intr);
+        let cfg = hub.config();
+        let records = process_clip(&id, &frames, &cfg, &intr);
         let summary = if records.is_empty() {
             format!("{id}: ball moved, no event")
         } else {
@@ -314,13 +349,52 @@ async fn coordinate(
             print_hit(r);
         }
         let existing = session.hits().map_err(|e| e.to_string())?;
-        let mut hits = merge_clip_hits(existing, &id, records);
+        let hits = merge_clip_hits(existing, &id, records.clone());
         session.write_hits(&hits).map_err(|e| e.to_string())?;
-        post_hits(&session, &mut hits, &client).await?;
+        for record in records {
+            hub.send(&ServerMsg::Event {
+                clip: id.clone(),
+                record,
+            });
+        }
         if let Ok(mut s) = status.lock() {
             s.clips += 1;
             s.last_event = summary;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracker::BallBox;
+
+    fn ball(x: f64) -> BallBox {
+        BallBox {
+            x,
+            y: 200.0,
+            w: 18.0,
+            h: 18.0,
+            conf: 0.9,
+            depth_m: Some(1.6),
+        }
+    }
+
+    #[test]
+    fn closing_the_gate_flushes_one_open_episode() {
+        let mut watcher = Watcher::new(WatchConfig::default());
+        assert!(gate_closed(&mut watcher).is_none());
+        for i in 0..40 {
+            watcher.observe(
+                i,
+                i as u64 * 10_000_000,
+                vec![ball(100.0 + 40.0 * i as f64)],
+            );
+        }
+        assert_eq!(watcher.state(), WatchState::Episode);
+        assert!(gate_closed(&mut watcher).is_some());
+        assert_eq!(watcher.state(), WatchState::Idle);
+        assert!(gate_closed(&mut watcher).is_none());
+    }
 }

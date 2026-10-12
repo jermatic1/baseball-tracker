@@ -1,6 +1,5 @@
 pub mod config;
 pub mod geom;
-pub mod launch;
 pub mod mot;
 pub mod plate;
 pub mod rectify;
@@ -9,9 +8,8 @@ pub mod stereo;
 pub mod track;
 pub mod watch;
 
-pub use config::{CaptureConfig, MountConfig, SessionConfig, SimulatorConfig, WatchConfig};
+pub use config::{CaptureConfig, MountConfig, SessionConfig, WatchConfig};
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
-pub use launch::postable;
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use rectify::{Eye, Rectifier};
 pub use session::{
@@ -129,7 +127,6 @@ pub fn process_clip(
             contact,
             samples: est.samples,
             confident: est.confident,
-            posted: false,
         });
     }
     out
@@ -217,23 +214,12 @@ pub fn clip_hits(session: &Session, id: &str) -> Result<Vec<HitRecord>, TrackerE
     Ok(process_clip(id, &dets.frames, &session.config, &intr))
 }
 
-/// Replace one clip's records in a hit list. A record that was already
-/// posted stays posted when it comes back under the same key.
+/// Replace a clip's records in the session's list, keeping the rest.
 pub fn merge_clip_hits(
     existing: Vec<HitRecord>,
     clip: &str,
-    mut new: Vec<HitRecord>,
+    new: Vec<HitRecord>,
 ) -> Vec<HitRecord> {
-    let posted: std::collections::HashSet<String> = existing
-        .iter()
-        .filter(|h| h.clip == clip && h.posted)
-        .map(HitRecord::key)
-        .collect();
-    for hit in &mut new {
-        if posted.contains(&hit.key()) {
-            hit.posted = true;
-        }
-    }
     let mut out: Vec<HitRecord> = existing.into_iter().filter(|h| h.clip != clip).collect();
     out.extend(new);
     out.sort_by(|a, b| a.clip.cmp(&b.clip));
@@ -697,12 +683,11 @@ mod tests {
             contact: None,
             samples: 8,
             confident: true,
-            posted: true,
         }];
         session.write_hits(&hits).unwrap();
         let opened = Session::open(&dir).unwrap();
         let h2 = opened.hits().unwrap();
-        assert!(h2[0].posted);
+        assert_eq!(h2[0].clip, id);
         assert!(opened.config.mount.positive_depth_is_rf);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -820,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_clip_hits_keeps_posted_flags() {
+    fn merge_clip_hits_replaces_one_clip() {
         let mut s = Synth::new(12);
         s.flight(
             [1.2, 1.0, -0.6],
@@ -830,36 +815,22 @@ mod tests {
             &[],
         );
         let rec = s.records().remove(0);
-        let with = |clip: &str, segment: usize, posted: bool| HitRecord {
+        let with = |clip: &str, segment: usize| HitRecord {
             clip: clip.to_string(),
             segment,
-            posted,
             ..rec.clone()
         };
         let existing = vec![
-            with("0001", 0, true),
-            with("0002", 0, true),
-            with("0002", 1, false),
-            with("0003", 0, false),
+            with("0001", 0),
+            with("0002", 0),
+            with("0002", 1),
+            with("0003", 0),
         ];
-        let merged = merge_clip_hits(
-            existing,
-            "0002",
-            vec![with("0002", 0, false), with("0002", 1, false)],
-        );
-        let flags: Vec<_> = merged
+        let merged = merge_clip_hits(existing, "0002", vec![with("0002", 0)]);
+        let keys: Vec<_> = merged
             .iter()
-            .map(|h| (h.clip.as_str(), h.segment, h.posted))
+            .map(|h| (h.clip.as_str(), h.segment))
             .collect();
-        assert_eq!(
-            flags,
-            vec![
-                ("0001", 0, true),
-                ("0002", 0, true),
-                ("0002", 1, false),
-                ("0003", 0, false)
-            ]
-        );
-        assert_eq!(merge_clip_hits(merged, "0002", Vec::new()).len(), 2);
+        assert_eq!(keys, vec![("0001", 0), ("0002", 0), ("0003", 0)]);
     }
 }
