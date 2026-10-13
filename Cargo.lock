@@ -632,6 +632,7 @@ dependencies = [
  "device",
  "futures-util",
  "image",
+ "libc",
  "ort",
  "serde",
  "serde_json",
