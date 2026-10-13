@@ -72,7 +72,7 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
         Arc::clone(&status),
         Intrinsics::from_fov(c.width, c.height, 80.0, 55.0),
     ));
-    match from {
+    let worker = match from {
         Some(source) => {
             let source = Session::open(&source).map_err(|e| e.to_string())?;
             let calibration = source.dir.join("calibration.json");
@@ -83,8 +83,9 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
             let device_json = std::fs::read_to_string(session.dir.join("calibration.json")).ok();
             let calib = crate::capture::stereo_calib(&session, device_json.as_deref());
             let cam = crate::replay::ClipCamera::open(&source)?;
-            spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
+            let worker = spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
             server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap), hub).await?;
+            worker
         }
         None => {
             #[cfg(not(feature = "oak"))]
@@ -95,11 +96,12 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
             #[cfg(feature = "oak")]
             {
                 let (cam, calib) = crate::capture::open_oak(&session)?;
-                spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
+                let worker = spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
                 server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap), hub).await?;
+                worker
             }
         }
-    }
+    };
     let pending = || {
         watch_status
             .lock()
@@ -107,14 +109,16 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
             .unwrap_or_default()
     };
     println!("waiting for the detector to finish: {}", pending());
-    match tokio::time::timeout(Duration::from_secs(30), coordinator).await {
+    let result = match tokio::time::timeout(Duration::from_secs(30), coordinator).await {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => Err(format!("coordinator failed: {e}")),
         Err(_) => Err(format!(
             "gave up after 30 s waiting for the detector: {}",
             pending()
         )),
-    }
+    };
+    let _ = tokio::task::spawn_blocking(move || worker.join()).await;
+    result
 }
 
 fn spawn_detector(
@@ -124,13 +128,13 @@ fn spawn_detector(
     calib: StereoCalib,
     shared: Shared,
     done: UnboundedSender<Finished>,
-) {
+) -> std::thread::JoinHandle<()> {
     let session = session.clone();
     std::thread::spawn(move || {
         if let Err(e) = detect_loop(rx, detector, session, calib, shared, done) {
             eprintln!("detector stopped: {e}");
         }
-    });
+    })
 }
 
 /// Every frame: detect, feed the watcher, keep the pre-roll ring, and write

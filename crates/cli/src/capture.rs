@@ -251,7 +251,7 @@ pub(crate) mod server {
             stop: stop_rx,
         };
         let poll_state = Arc::clone(&state);
-        std::thread::spawn(move || poll_loop(cam, poll_state));
+        let poller = std::thread::spawn(move || poll_loop(cam, poll_state));
         tokio::spawn(status_ticker(app.clone(), Arc::clone(&stopping)));
         tokio::spawn(preview_producer(app.clone(), Arc::clone(&stopping)));
         tokio::spawn(calibration_sampler(app.clone(), Arc::clone(&stopping)));
@@ -295,6 +295,7 @@ pub(crate) mod server {
         if let Some(done) = done {
             let _ = tokio::task::spawn_blocking(move || done.recv()).await;
         }
+        let _ = tokio::task::spawn_blocking(move || poller.join()).await;
         Ok(())
     }
 
