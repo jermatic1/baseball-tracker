@@ -82,10 +82,16 @@ enum Command {
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
+    let code = match run().await {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    };
+    // The NVIDIA driver on Jetson aborts in its library destructors, so skip them.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    unsafe { libc::_exit(code) }
 }
 
 async fn run() -> Result<(), String> {
