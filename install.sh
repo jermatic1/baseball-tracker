@@ -31,6 +31,7 @@ main() {
     sudo apt-get update
     # shellcheck disable=SC2086
     sudo apt-get install -y --no-install-recommends $missing
+    sudo ldconfig
   fi
 
   rule=/etc/udev/rules.d/80-movidius.rules
