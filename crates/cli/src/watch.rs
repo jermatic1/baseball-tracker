@@ -208,6 +208,7 @@ fn detect_loop(
                 "detector: first inference, building the {} engine if it is not cached (minutes on a first start)",
                 detector.provider()
             );
+            first = Some(Instant::now());
         }
         let balls = match detector.detect(&FrameView {
             width: frame.width,
