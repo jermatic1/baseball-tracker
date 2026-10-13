@@ -162,6 +162,7 @@ pub(crate) mod server {
     use device::Camera;
     use futures_util::{SinkExt, StreamExt};
     use tokio::sync::broadcast::error::RecvError;
+    use tokio::sync::watch;
     use tracker::plate::{PlateCorners, PoseFit};
 
     use crate::convert::to_stored;
@@ -213,6 +214,7 @@ pub(crate) mod server {
     struct App {
         state: Arc<Mutex<CaptureState>>,
         hub: Arc<Hub>,
+        stop: watch::Receiver<bool>,
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -242,9 +244,11 @@ pub(crate) mod server {
             stop: Arc::clone(&stopping),
             last_fit: None,
         }));
+        let (stop_tx, stop_rx) = watch::channel(false);
         let app = App {
             state: Arc::clone(&state),
             hub,
+            stop: stop_rx,
         };
         let poll_state = Arc::clone(&state);
         std::thread::spawn(move || poll_loop(cam, poll_state));
@@ -262,14 +266,23 @@ pub(crate) mod server {
             .await
             .map_err(|e| e.to_string())?;
         println!("http://{BIND}  ws://{BIND}/ws");
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async {
+        let shutdown = {
+            let stopping = Arc::clone(&stopping);
+            async move {
                 let _ = tokio::signal::ctrl_c().await;
                 println!("stopping");
-            })
+                stopping.store(true, Ordering::Relaxed);
+                let _ = stop_tx.send(true);
+                tokio::spawn(async {
+                    let _ = tokio::signal::ctrl_c().await;
+                    std::process::exit(130);
+                });
+            }
+        };
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown)
             .await
             .map_err(|e| e.to_string())?;
-        stopping.store(true, Ordering::Relaxed);
         // Finish a manual clip and hand the live watcher its last frame.
         let (done, _tap) = {
             let mut st = state.lock().map_err(|e| e.to_string())?;
@@ -420,7 +433,13 @@ pub(crate) mod server {
                 }
             }
         });
-        while let Some(Ok(msg)) = stream.next().await {
+        let mut stop = app.stop.clone();
+        loop {
+            let msg = tokio::select! {
+                msg = stream.next() => msg,
+                _ = stop.changed() => break,
+            };
+            let Some(Ok(msg)) = msg else { break };
             let text = match msg {
                 Message::Text(text) => text,
                 Message::Close(_) => break,
@@ -511,6 +530,9 @@ pub(crate) mod server {
     }
 
     fn start_record(st: &mut CaptureState) -> Result<(), String> {
+        if st.stop.load(Ordering::Relaxed) {
+            return Err("stopping".into());
+        }
         if st.record_tx.is_some() {
             return Err("already recording".into());
         }
