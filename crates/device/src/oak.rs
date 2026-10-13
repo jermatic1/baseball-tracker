@@ -25,13 +25,15 @@ struct Counters {
     since: Option<Instant>,
 }
 
+/// Fields drop in declaration order: queues before the pipeline, pipeline
+/// before the device.
 pub struct OakCamera {
-    device: Device,
-    _pipeline: Pipeline,
     q_left: MessageQueue,
     q_right: MessageQueue,
     ctrl_left: InputQueue,
     ctrl_right: InputQueue,
+    _pipeline: Pipeline,
+    device: Device,
     width: u32,
     height: u32,
     intrinsics: Intrinsics,
