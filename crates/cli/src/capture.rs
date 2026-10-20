@@ -266,6 +266,10 @@ pub(crate) mod server {
             .await
             .map_err(|e| e.to_string())?;
         println!("http://{BIND}  ws://{BIND}/ws");
+        match crate::discovery::spawn(addr.port()) {
+            Ok(()) => println!("discovery udp://0.0.0.0:{}", crate::discovery::PORT),
+            Err(e) => eprintln!("discovery off: {e}"),
+        }
         let shutdown = {
             let stopping = Arc::clone(&stopping);
             async move {

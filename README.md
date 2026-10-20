@@ -73,4 +73,4 @@ Everything for one camera setup lives in a session directory under `sessions/`.
 
 ## Simulators
 
-Simulators connect to the tracker and receive every hit over a WebSocket. The protocol is described in [docs/protocol.md](docs/protocol.md).
+Simulators find the tracker on the local network and receive every hit over a WebSocket. The protocol is described in [docs/protocol.md](docs/protocol.md).

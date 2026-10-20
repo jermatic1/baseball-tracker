@@ -5,6 +5,7 @@ mod convert;
 mod detect;
 #[cfg(feature = "detect")]
 mod detector;
+mod discovery;
 mod error;
 mod hub;
 mod jpeg;
