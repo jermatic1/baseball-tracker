@@ -93,7 +93,7 @@ impl Watcher {
         let moving = self.moving(t_ns, first_ns, &balls);
         self.remember(t_ns, &balls);
         self.frames.push_back(DetFrame { index, t_ns, balls });
-        let preroll = secs_ns(self.cfg.preroll_s);
+        let preroll = secs_ns(self.cfg.preroll);
         match &mut self.episode {
             None => {
                 self.trim(t_ns.saturating_sub(preroll));
@@ -109,8 +109,8 @@ impl Watcher {
                 if moving {
                     run.last_motion_ns = t_ns;
                 }
-                let settled = t_ns - run.last_motion_ns >= secs_ns(self.cfg.settle_s);
-                let too_long = t_ns - run.start_ns >= secs_ns(self.cfg.max_episode_s);
+                let settled = t_ns - run.last_motion_ns >= secs_ns(self.cfg.settle);
+                let too_long = t_ns - run.start_ns >= secs_ns(self.cfg.max_episode);
                 if !(settled || too_long) {
                     return None;
                 }
@@ -136,7 +136,7 @@ impl Watcher {
         if balls.is_empty() || t_ns - first_ns < secs_ns(MATCH_WINDOW_S) {
             return false;
         }
-        let limit = self.cfg.move_px * self.cfg.move_px;
+        let limit = self.cfg.motion * self.cfg.motion;
         balls.iter().any(|b| {
             let (cx, cy) = b.centroid();
             !self.recent.iter().any(|(_, centres)| {

@@ -1,4 +1,5 @@
 pub mod config;
+pub mod flight;
 pub mod geom;
 pub mod mot;
 pub mod plate;
@@ -6,15 +7,18 @@ pub mod rectify;
 pub mod session;
 pub mod stereo;
 pub mod track;
+pub mod units;
 pub mod watch;
 
-pub use config::{CaptureConfig, MountConfig, SessionConfig, WatchConfig};
+pub use config::{
+    CaptureConfig, FlightConfig, MountConfig, PitchingConfig, SessionConfig, WatchConfig,
+};
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use rectify::{Eye, Rectifier};
 pub use session::{
     write_synth, Clip, ClipMeta, ClipWriter, Contact, ContactKind, Detections, EventKind,
-    HitRecord, HitType, Session, StoredFrame,
+    HitFlight, HitRecord, HitType, Landing, Location, PitchPlate, Session, StoredFrame,
 };
 pub use stereo::{stereo_calib_from_device, StereoCalib};
 pub use track::{
@@ -22,6 +26,8 @@ pub use track::{
     BallBox, DetFrame, Event, MotionParams, Segment, SplitKind,
 };
 pub use watch::{Episode, WatchState, Watcher};
+
+use crate::units::{feet, inches, metres, mph};
 
 use geom::unproject;
 
@@ -47,7 +53,7 @@ pub fn process_clip(
     intr: &Intrinsics,
 ) -> Vec<HitRecord> {
     let params = MotionParams::default();
-    let default_depth = cfg.mount.distance_from_plate_m;
+    let default_depth = metres(cfg.mount.distance);
     let tracks = track_balls(frames, tracker_config(intr.fx, default_depth, &params));
     let events = select_events(&tracks, frames, intr.fx, default_depth, &params);
     let mut last_pitch_mph: std::collections::HashMap<u32, f64> = Default::default();
@@ -78,15 +84,15 @@ pub fn process_clip(
         };
         let kind = if ev.segment.after_impact() {
             EventKind::Bounce
-        } else if est.spray_angle_deg.abs() > 90.0 {
+        } else if est.spray_angle.abs() > 90.0 {
             EventKind::Pitch
         } else {
             EventKind::Hit
         };
         if kind == EventKind::Pitch {
-            last_pitch_mph.insert(ev.track_id, est.exit_velocity_mph);
+            last_pitch_mph.insert(ev.track_id, est.exit_velocity);
         }
-        if kind == EventKind::Hit && est.exit_velocity_mph < cfg.tracking.min_hit_mph {
+        if kind == EventKind::Hit && est.exit_velocity < cfg.tracking.min_hit_velocity {
             continue;
         }
         let pivot = matches!(
@@ -96,7 +102,7 @@ pub fn process_clip(
                 ..
             })
         );
-        let pitch_mph = if kind == EventKind::Hit && pivot {
+        let pitch_velocity = if kind == EventKind::Hit && pivot {
             last_pitch_mph.get(&ev.track_id).copied()
         } else {
             None
@@ -110,23 +116,30 @@ pub fn process_clip(
             .get(used)
             .or_else(|| impact_next.then(|| samples.last()).flatten())
             .map(|s| contact_at(&traj, s.t_ns));
+        let hit = (kind == EventKind::Hit).then(|| {
+            let air = flight::air_density(metres(cfg.flight.altitude));
+            flight::predict(traj.p0, traj.v, air)
+        });
+        let pitch = (kind == EventKind::Pitch)
+            .then(|| pitch_plate(&traj, &cfg.pitching))
+            .flatten();
         out.push(HitRecord {
             clip: clip_id.to_string(),
             kind,
             segment: out.len(),
             frame_start: obs[0].frame,
             frame_end: obs[obs.len() - 1].frame,
-            anchored: ev.segment.anchor.is_some(),
-            t_start_ns: samples[0].t_ns,
-            exit_velocity_mph: est.exit_velocity_mph,
-            launch_angle_deg: est.launch_angle_deg,
-            spray_angle_deg: est.spray_angle_deg,
-            pitch_mph,
-            hit_type: (kind == EventKind::Hit)
-                .then(|| HitType::from_launch_deg(est.launch_angle_deg)),
+            start: samples[0].t_ns as f64 / 1e9,
+            exit_velocity: est.exit_velocity,
+            launch_angle: est.launch_angle,
+            spray_angle: est.spray_angle,
+            pitch_velocity,
+            hit_type: (kind == EventKind::Hit).then(|| HitType::from_launch_deg(est.launch_angle)),
             contact,
             samples: est.samples,
             confident: est.confident,
+            hit,
+            pitch,
         });
     }
     out
@@ -147,12 +160,45 @@ fn contact_at(traj: &Trajectory, t_ns: u64) -> Contact {
         ContactKind::Unknown
     };
     Contact {
-        t_ns,
-        x,
-        y,
-        z,
+        time: t_ns as f64 / 1e9,
+        x: feet(x),
+        y: feet(y),
+        z: feet(z),
         kind,
     }
+}
+
+/// Front edge of the plate, where pitch location is read.
+const PLATE_FRONT_M: f64 = -17.0 * 0.0254;
+/// Slowest approach toward the plate that counts as a pitch crossing it.
+const MIN_APPROACH_MPS: f64 = 1.0;
+
+/// Where the fitted flight crosses the front of the plate, and where it would
+/// have crossed had the same throw started the simulated distance away.
+fn pitch_plate(traj: &Trajectory, cfg: &PitchingConfig) -> Option<PitchPlate> {
+    let vz = traj.v[2];
+    if vz < MIN_APPROACH_MPS {
+        return None;
+    }
+    let t = (PLATE_FRONT_M - traj.p0[2]) / vz;
+    let [x, y, _] = traj.at_s(t);
+    if y <= 0.0 {
+        return None;
+    }
+    let extra = metres(cfg.simulated_distance - cfg.actual_distance);
+    let [sx, sy, _] = traj.at_s(t + extra / vz);
+    let [vx, vy, vz] = traj.velocity_s(t);
+    Some(PitchPlate {
+        plate_velocity: mph((vx * vx + vy * vy + vz * vz).sqrt()),
+        location: Location {
+            side: inches(x),
+            height: inches(y),
+        },
+        simulated_location: Location {
+            side: inches(sx),
+            height: inches(sy),
+        },
+    })
 }
 
 /// Largest residual a sample may have from the fitted flight before the ball
@@ -305,12 +351,11 @@ mod tests {
             // A fixed generic placement so the scenes don't follow the rig config.
             let mut cfg = SessionConfig::example();
             cfg.mount = MountConfig {
-                distance_from_plate_m: 2.1,
-                height_m: 0.8,
-                lateral_offset_m: 0.5,
-                pitch_deg: 0.0,
-                yaw_deg: 0.0,
-                positive_depth_is_rf: true,
+                distance: feet(2.1),
+                height: feet(0.8),
+                lateral: feet(0.5),
+                pitch: 0.0,
+                yaw: 0.0,
             };
             Self {
                 intr: Intrinsics::from_fov(640, 400, 80.0, 55.0),
@@ -387,7 +432,7 @@ mod tests {
         let params = MotionParams::default();
         let tracks = track_balls(
             &s.frames,
-            tracker_config(s.intr.fx, s.cfg.mount.distance_from_plate_m, &params),
+            tracker_config(s.intr.fx, metres(s.cfg.mount.distance), &params),
         );
         assert_eq!(tracks.len(), 3);
         let (u, v, _) = project(TEE, &s.intr, &s.cfg.mount).unwrap();
@@ -406,14 +451,13 @@ mod tests {
         let recs = s.records();
         assert_eq!(recs.len(), 1, "{recs:?}");
         assert_eq!(recs[0].kind, EventKind::Hit);
-        assert!(recs[0].anchored);
         assert_eq!(recs[0].samples, 11);
         assert!(
-            (recs[0].exit_velocity_mph - HIT_MPH).abs() < 1.0,
+            (recs[0].exit_velocity - HIT_MPH).abs() < 1.0,
             "mph {}",
-            recs[0].exit_velocity_mph
+            recs[0].exit_velocity
         );
-        assert!((recs[0].launch_angle_deg - 10.0).abs() < 1.0);
+        assert!((recs[0].launch_angle - 10.0).abs() < 1.0);
     }
 
     #[test]
@@ -424,7 +468,7 @@ mod tests {
         let recs = s.records();
         assert_eq!(recs.len(), 1, "{recs:?}");
         assert_eq!(recs[0].kind, EventKind::Pitch);
-        assert!((recs[0].exit_velocity_mph - 45.0).abs() < 1.0);
+        assert!((recs[0].exit_velocity - 45.0).abs() < 1.0);
     }
 
     #[test]
@@ -438,7 +482,7 @@ mod tests {
         assert_eq!(recs.len(), 2, "{recs:?}");
         assert_eq!(recs[0].kind, EventKind::Pitch);
         assert_eq!(recs[1].kind, EventKind::Hit);
-        assert!((recs[1].exit_velocity_mph - HIT_MPH).abs() < 1.0);
+        assert!((recs[1].exit_velocity - HIT_MPH).abs() < 1.0);
     }
 
     #[test]
@@ -454,15 +498,14 @@ mod tests {
         let recs = s.records();
         assert_eq!(recs.len(), 2, "{recs:?}");
         assert_eq!(recs[0].kind, EventKind::Pitch);
-        assert!((recs[0].exit_velocity_mph - 12.0).abs() < 1.0);
+        assert!((recs[0].exit_velocity - 12.0).abs() < 1.0);
         let hit = &recs[1];
         assert_eq!(hit.kind, EventKind::Hit);
-        assert!(hit.anchored);
-        assert!((hit.pitch_mph.unwrap() - 12.0).abs() < 1.0);
+        assert!((hit.pitch_velocity.unwrap() - 12.0).abs() < 1.0);
         assert!(
-            (hit.exit_velocity_mph - HIT_MPH).abs() < 1.0,
+            (hit.exit_velocity - HIT_MPH).abs() < 1.0,
             "{}",
-            hit.exit_velocity_mph
+            hit.exit_velocity
         );
         assert_eq!(hit.hit_type, Some(HitType::LineDrive));
     }
@@ -510,9 +553,9 @@ mod tests {
         let contact = hits[0].contact.expect("contact");
         assert_eq!(contact.kind, ContactKind::Ground, "{contact:?}");
         assert!(
-            (hits[0].exit_velocity_mph - 45.0).abs() < 1.5,
+            (hits[0].exit_velocity - 45.0).abs() < 1.5,
             "{}",
-            hits[0].exit_velocity_mph
+            hits[0].exit_velocity
         );
         assert!(recs.iter().any(|r| r.kind == EventKind::Bounce), "{recs:?}");
     }
@@ -524,9 +567,8 @@ mod tests {
         s.flight(TEE, hit_vel(), 129.5 / SYNTH_FPS, 130..140, &[131, 132]);
         let recs = s.records();
         assert_eq!(recs.len(), 1, "{recs:?}");
-        assert!(recs[0].anchored);
         assert_eq!(recs[0].samples, 9);
-        assert!((recs[0].exit_velocity_mph - HIT_MPH).abs() < 1.0);
+        assert!((recs[0].exit_velocity - HIT_MPH).abs() < 1.0);
     }
 
     #[test]
@@ -566,25 +608,25 @@ mod tests {
     fn center_field_65_mph() {
         let samples = traj_samples(65.0, 0.0, 0.0, 8, 60.0);
         let est = fit_samples(&samples).unwrap();
-        assert!((est.exit_velocity_mph - 65.0).abs() < 0.05);
-        assert!(est.launch_angle_deg.abs() < 0.05);
-        assert!(est.spray_angle_deg.abs() < 0.05);
+        assert!((est.exit_velocity - 65.0).abs() < 0.05);
+        assert!(est.launch_angle.abs() < 0.05);
+        assert!(est.spray_angle.abs() < 0.05);
     }
 
     #[test]
     fn launch_and_spray_with_gravity() {
         let samples = traj_samples(65.0, 18.0, -12.0, 8, 60.0);
         let est = fit_samples(&samples).unwrap();
-        assert!((est.exit_velocity_mph - 65.0).abs() < 0.1);
-        assert!((est.launch_angle_deg - 18.0).abs() < 0.1);
-        assert!((est.spray_angle_deg - (-12.0)).abs() < 0.1);
+        assert!((est.exit_velocity - 65.0).abs() < 0.1);
+        assert!((est.launch_angle - 18.0).abs() < 0.1);
+        assert!((est.spray_angle - (-12.0)).abs() < 0.1);
     }
 
     #[test]
     fn positive_spray_is_positive() {
         let samples = traj_samples(70.0, 10.0, 15.0, 6, 60.0);
         let est = fit_samples(&samples).unwrap();
-        assert!(est.spray_angle_deg > 0.0);
+        assert!(est.spray_angle > 0.0);
     }
 
     #[test]
@@ -597,20 +639,6 @@ mod tests {
         assert!((p[0] - q[0]).abs() < 1e-9);
         assert!((p[1] - q[1]).abs() < 1e-9);
         assert!((p[2] - q[2]).abs() < 1e-9);
-    }
-
-    #[test]
-    fn positive_depth_is_rf_flips_field_x() {
-        let mut cfg = SessionConfig::example();
-        let intr = Intrinsics::from_fov(1280, 800, 80.0, 55.0);
-        cfg.mount.positive_depth_is_rf = true;
-        let p_true = unproject(intr.cx + 40.0, intr.cy + 10.0, 2.2, &intr, &cfg.mount);
-        cfg.mount.positive_depth_is_rf = false;
-        let p_false = unproject(intr.cx + 40.0, intr.cy + 10.0, 2.2, &intr, &cfg.mount);
-        assert!((p_true[0] + p_false[0]).abs() < 1e-9);
-        assert!((p_true[1] - p_false[1]).abs() < 1e-9);
-        assert!((p_true[2] - p_false[2]).abs() < 1e-9);
-        assert!(p_true[0].abs() > 1e-6);
     }
 
     #[test]
@@ -673,22 +701,22 @@ mod tests {
             segment: 0,
             frame_start: 0,
             frame_end: 1,
-            anchored: false,
-            t_start_ns: 0,
-            exit_velocity_mph: 65.0,
-            launch_angle_deg: 18.0,
-            spray_angle_deg: -12.0,
-            pitch_mph: None,
+            start: 0.0,
+            exit_velocity: 65.0,
+            launch_angle: 18.0,
+            spray_angle: -12.0,
+            pitch_velocity: None,
             hit_type: Some(HitType::LineDrive),
             contact: None,
             samples: 8,
             confident: true,
+            hit: None,
+            pitch: None,
         }];
         session.write_hits(&hits).unwrap();
         let opened = Session::open(&dir).unwrap();
         let h2 = opened.hits().unwrap();
         assert_eq!(h2[0].clip, id);
-        assert!(opened.config.mount.positive_depth_is_rf);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -697,24 +725,24 @@ mod tests {
         let dir = temp_dir();
         let est = write_synth(&dir).unwrap();
         assert!(
-            (est.exit_velocity_mph - 65.0).abs() < 1.0,
+            (est.exit_velocity - 65.0).abs() < 1.0,
             "exit {}",
-            est.exit_velocity_mph
+            est.exit_velocity
         );
         assert!(
-            (est.launch_angle_deg - 18.0).abs() < 1.0,
+            (est.launch_angle - 18.0).abs() < 1.0,
             "launch {}",
-            est.launch_angle_deg
+            est.launch_angle
         );
         assert!(
-            (est.spray_angle_deg - (-12.0)).abs() < 1.0,
+            (est.spray_angle - (-12.0)).abs() < 1.0,
             "spray {}",
-            est.spray_angle_deg
+            est.spray_angle
         );
         let session = Session::open(&dir).unwrap();
         let hits = recompute_hits(&session).unwrap();
         assert_eq!(hits.len(), 1);
-        assert!((hits[0].exit_velocity_mph - 65.0).abs() < 1.0);
+        assert!((hits[0].exit_velocity - 65.0).abs() < 1.0);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -758,8 +786,8 @@ mod tests {
         assert_eq!(batch.len(), 1);
         assert_eq!(live[0].kind, EventKind::Hit);
         assert_eq!(live[0].samples, batch[0].samples);
-        assert!((live[0].exit_velocity_mph - batch[0].exit_velocity_mph).abs() < 0.1);
-        assert!((live[0].launch_angle_deg - batch[0].launch_angle_deg).abs() < 0.1);
+        assert!((live[0].exit_velocity - batch[0].exit_velocity).abs() < 0.1);
+        assert!((live[0].launch_angle - batch[0].launch_angle).abs() < 0.1);
         assert_eq!(live[0].frame_start, batch[0].frame_start);
         let clip = ep.as_clip();
         assert_eq!(clip[0].index, 0);
@@ -783,7 +811,7 @@ mod tests {
     #[test]
     fn watcher_closes_a_window_that_runs_too_long() {
         let cfg = WatchConfig {
-            max_episode_s: 1.0,
+            max_episode: 1.0,
             ..WatchConfig::default()
         };
         let mut s = Synth::new(300);
@@ -802,6 +830,31 @@ mod tests {
         assert_eq!(eps[0].last(), 110);
         assert_eq!(eps[1].first(), 61, "pre-roll survives the cut");
         assert_eq!(eps[1].last(), 211);
+    }
+
+    #[test]
+    fn pitch_location_drops_when_projected_farther() {
+        let traj = Trajectory {
+            t0_ns: 0,
+            p0: [0.1, 1.5, -8.0],
+            v: [0.0, 0.5, 20.0],
+        };
+        let cfg = PitchingConfig {
+            actual_distance: 30.0,
+            simulated_distance: 46.0,
+        };
+        let p = pitch_plate(&traj, &cfg).expect("crosses the plate");
+        assert!(p.location.height > 0.0);
+        assert!(p.simulated_location.height < p.location.height - 12.0);
+        assert!((p.location.side - inches(0.1)).abs() < 1e-9);
+        assert!((p.plate_velocity - mph(20.0)).abs() < 1.0);
+        let same = pitch_plate(&traj, &PitchingConfig::default()).unwrap();
+        assert_eq!(same.location, same.simulated_location);
+        let away = Trajectory {
+            v: [0.0, 0.5, -20.0],
+            ..traj
+        };
+        assert!(pitch_plate(&away, &cfg).is_none());
     }
 
     #[test]

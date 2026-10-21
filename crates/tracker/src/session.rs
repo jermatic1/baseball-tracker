@@ -101,45 +101,71 @@ pub enum ContactKind {
     Unknown,
 }
 
-/// Where the free flight was observed to end, in the field frame.
+/// Where the free flight was observed to end, in the field frame, feet.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Contact {
-    pub t_ns: u64,
+    pub time: f64,
     pub x: f64,
     pub y: f64,
     pub z: f64,
     pub kind: ContactKind,
 }
 
-/// One moving-ball event. Older files without the event fields still load.
+/// Predicted rest of a hit's flight, in feet and seconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HitFlight {
+    pub carry: f64,
+    pub hang_time: f64,
+    pub peak_height: f64,
+    pub landing: Landing,
+    /// `[t, x, y, z]` about ten times a second, from contact to landing.
+    pub path: Vec<[f64; 4]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Landing {
+    pub x: f64,
+    pub z: f64,
+}
+
+/// A pitch at the front of the plate, and where the same throw would have
+/// crossed from the simulated pitching distance.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PitchPlate {
+    pub plate_velocity: f64,
+    pub location: Location,
+    pub simulated_location: Location,
+}
+
+/// Inches from the centre of the plate, positive toward first base, and
+/// above the ground.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Location {
+    pub side: f64,
+    pub height: f64,
+}
+
+/// One moving-ball event. Speeds are mph, angles degrees, times seconds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HitRecord {
     pub clip: String,
-    #[serde(default)]
     pub kind: EventKind,
-    #[serde(default)]
     pub segment: usize,
-    #[serde(default)]
     pub frame_start: usize,
-    #[serde(default)]
     pub frame_end: usize,
-    #[serde(default)]
-    pub anchored: bool,
-    /// Device time the flight began: the contact time for anchored events.
-    #[serde(default)]
-    pub t_start_ns: u64,
-    pub exit_velocity_mph: f64,
-    pub launch_angle_deg: f64,
-    pub spray_angle_deg: f64,
+    /// Device time the flight began.
+    pub start: f64,
+    pub exit_velocity: f64,
+    pub launch_angle: f64,
+    pub spray_angle: f64,
     /// Speed of the incoming ball when a pitch was tracked before this hit.
-    #[serde(default)]
-    pub pitch_mph: Option<f64>,
-    #[serde(default)]
+    pub pitch_velocity: Option<f64>,
     pub hit_type: Option<HitType>,
-    #[serde(default)]
     pub contact: Option<Contact>,
     pub samples: usize,
     pub confident: bool,
+    pub hit: Option<HitFlight>,
+    pub pitch: Option<PitchPlate>,
 }
 
 impl HitRecord {
@@ -670,9 +696,9 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
         .ok_or_else(|| TrackerError::Other("synth clip did not produce a hit".into()))?;
     session.write_hits(std::slice::from_ref(&rec))?;
     Ok(HitEstimate {
-        exit_velocity_mph: rec.exit_velocity_mph,
-        launch_angle_deg: rec.launch_angle_deg,
-        spray_angle_deg: rec.spray_angle_deg,
+        exit_velocity: rec.exit_velocity,
+        launch_angle: rec.launch_angle,
+        spray_angle: rec.spray_angle,
         samples: rec.samples,
         confident: rec.confident,
     })

@@ -36,7 +36,7 @@ fn capture_demo(path: PathBuf) -> Result<(), String> {
             frames.push(to_stored(frame));
         }
     }
-    let exposure_us = session.config.capture.exposure_us;
+    let exposure_us = session.config.capture.exposure;
     let gain = session.config.capture.gain;
     let id = session
         .save_clip(&frames, exposure_us, gain)
@@ -70,7 +70,7 @@ fn capture_once(path: PathBuf) -> Result<(), String> {
         width,
         height,
         fps.max(1.0),
-        session.config.capture.exposure_us,
+        session.config.capture.exposure,
         session.config.capture.gain,
     )?;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -93,7 +93,7 @@ fn capture_once(path: PathBuf) -> Result<(), String> {
 #[cfg(feature = "oak")]
 async fn capture_oak(path: PathBuf) -> Result<(), String> {
     let session = tracker::Session::create(&path).map_err(|e| e.to_string())?;
-    let exposure_us = session.config.capture.exposure_us;
+    let exposure_us = session.config.capture.exposure;
     let gain = session.config.capture.gain;
     let (cam, calib) = open_oak(&session)?;
     let hub = crate::hub::Hub::new(session.config.clone());
@@ -111,7 +111,7 @@ pub(crate) fn open_oak(
         c.width,
         c.height,
         (c.fps as f32).max(1.0),
-        c.exposure_us,
+        c.exposure,
         c.gain,
     )?;
     let device_calib = cam.calibration_json();
@@ -137,7 +137,7 @@ pub(crate) fn stereo_calib(
         None => {
             println!("no device calibration; using the disparity offset from config");
             tracker::stereo_calib_from_device(device_json, c.width)
-                .with_offset(session.config.stereo.disparity_offset_px)
+                .with_offset(session.config.stereo.disparity_offset)
         }
     };
     println!(
@@ -490,13 +490,13 @@ pub(crate) mod server {
                 Ok(())
             }
             ClientMsg::Set {
-                exposure_us,
+                exposure,
                 gain,
                 ir_flood,
                 ir_dot,
             } => {
                 let mut st = app.state.lock().map_err(|e| e.to_string())?;
-                if let Some(v) = exposure_us {
+                if let Some(v) = exposure {
                     st.exposure_us = v.clamp(1, 1_000_000);
                 }
                 if let Some(v) = gain {
@@ -596,7 +596,7 @@ pub(crate) mod server {
             found: fit.is_some(),
             corners: fit.map(|(c, _)| pts(&c.px)),
             reprojected: fit.map(|(_, f)| pts(&f.reprojected)),
-            rms_px: fit.map(|(_, f)| f.rms_px),
+            rms: fit.map(|(_, f)| f.rms_px),
             mount: fit.map(|(_, f)| f.mount.clone()),
             applied,
         }
@@ -620,7 +620,7 @@ pub(crate) mod server {
                 capturing: app.hub.capturing(),
                 calibrating: app.hub.calibrating(),
                 recording: st.record_tx.is_some(),
-                exposure_us: st.exposure_us,
+                exposure: st.exposure_us,
                 gain: st.gain,
                 ir_flood: st.ir_flood,
                 ir_dot: st.ir_dot,

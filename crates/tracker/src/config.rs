@@ -1,3 +1,6 @@
+//! Session settings. Distances are feet, speeds mph, angles degrees, times
+//! seconds, exposure microseconds.
+
 use std::fs;
 use std::path::Path;
 
@@ -10,30 +13,31 @@ pub struct CaptureConfig {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
-    pub exposure_us: u32,
+    pub exposure: u32,
     pub gain: u32,
 }
 
+/// Camera pose relative to the plate apex.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MountConfig {
-    pub distance_from_plate_m: f64,
-    pub height_m: f64,
-    pub lateral_offset_m: f64,
-    pub pitch_deg: f64,
-    pub yaw_deg: f64,
-    pub positive_depth_is_rf: bool,
+    pub distance: f64,
+    pub height: f64,
+    pub lateral: f64,
+    pub pitch: f64,
+    pub yaw: f64,
 }
 
-/// Event selection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackingConfig {
     /// Slowest batted ball reported as a hit. Pitches have no floor.
-    pub min_hit_mph: f64,
+    pub min_hit_velocity: f64,
 }
 
 impl Default for TrackingConfig {
     fn default() -> Self {
-        Self { min_hit_mph: 15.0 }
+        Self {
+            min_hit_velocity: 15.0,
+        }
     }
 }
 
@@ -41,14 +45,14 @@ impl Default for TrackingConfig {
 /// stream around the motion becomes a clip.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WatchConfig {
-    /// A ball farther than this from every recently seen ball has moved.
-    pub move_px: f64,
+    /// Pixels a ball must be from every recently seen ball to have moved.
+    pub motion: f64,
     /// Seconds kept before the first motion.
-    pub preroll_s: f64,
+    pub preroll: f64,
     /// Seconds without motion that end the window.
-    pub settle_s: f64,
+    pub settle: f64,
     /// Longest window, in case something keeps moving.
-    pub max_episode_s: f64,
+    pub max_episode: f64,
     /// Write the frames of each window as a clip. Off keeps only the
     /// detections and events.
     pub keep_clips: bool,
@@ -57,29 +61,56 @@ pub struct WatchConfig {
 impl Default for WatchConfig {
     fn default() -> Self {
         Self {
-            move_px: 4.0,
-            preroll_s: 0.5,
-            settle_s: 0.15,
-            max_episode_s: 6.0,
+            motion: 4.0,
+            preroll: 0.5,
+            settle: 0.15,
+            max_episode: 6.0,
             keep_clips: true,
         }
     }
 }
 
-/// Stereo correction for this rig. The raw eyes are not rectified, so a
-/// fixed horizontal misalignment shows up as extra disparity everywhere.
-/// Calibrate it from one measured distance: offset = measured disparity -
-/// fx * baseline / distance.
+/// Stereo correction for sessions recorded without the camera's saved
+/// calibration: the disparity the raw eyes show at infinity, in pixels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StereoConfig {
-    pub disparity_offset_px: f64,
+    pub disparity_offset: f64,
 }
 
 impl Default for StereoConfig {
     fn default() -> Self {
         Self {
-            disparity_offset_px: 0.0,
+            disparity_offset: 0.0,
         }
+    }
+}
+
+/// Where the pitcher actually throws from, and the mound distance each
+/// pitch's plate location is projected to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PitchingConfig {
+    pub actual_distance: f64,
+    pub simulated_distance: f64,
+}
+
+impl Default for PitchingConfig {
+    fn default() -> Self {
+        Self {
+            actual_distance: 46.0,
+            simulated_distance: 46.0,
+        }
+    }
+}
+
+/// Conditions for the predicted flight of a hit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightConfig {
+    pub altitude: f64,
+}
+
+impl Default for FlightConfig {
+    fn default() -> Self {
+        Self { altitude: 0.0 }
     }
 }
 
@@ -93,6 +124,10 @@ pub struct SessionConfig {
     pub tracking: TrackingConfig,
     #[serde(default)]
     pub watch: WatchConfig,
+    #[serde(default)]
+    pub pitching: PitchingConfig,
+    #[serde(default)]
+    pub flight: FlightConfig,
 }
 
 impl SessionConfig {
@@ -102,22 +137,23 @@ impl SessionConfig {
                 width: 640,
                 height: 400,
                 fps: 100.0,
-                exposure_us: 600,
+                exposure: 600,
                 gain: 1600,
             },
             mount: MountConfig {
-                distance_from_plate_m: 1.74,
-                height_m: 0.9,
-                lateral_offset_m: -1.61,
-                pitch_deg: 30.5,
-                yaw_deg: 23.0,
-                positive_depth_is_rf: true,
+                distance: 5.71,
+                height: 2.95,
+                lateral: -5.28,
+                pitch: 30.5,
+                yaw: 23.0,
             },
             stereo: StereoConfig {
-                disparity_offset_px: 17.1,
+                disparity_offset: 17.1,
             },
             tracking: TrackingConfig::default(),
             watch: WatchConfig::default(),
+            pitching: PitchingConfig::default(),
+            flight: FlightConfig::default(),
         }
     }
 

@@ -39,7 +39,12 @@ struct Shared {
     hub: Arc<Hub>,
 }
 
-pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Result<(), String> {
+pub async fn watch(
+    path: PathBuf,
+    model: String,
+    from: Option<PathBuf>,
+    gap: f64,
+) -> Result<(), String> {
     let session = Session::create(&path).map_err(|e| e.to_string())?;
     let detector = Detector::load(&model)?;
     let hub = Hub::new(session.config.clone());
@@ -82,9 +87,9 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
             }
             let device_json = std::fs::read_to_string(session.dir.join("calibration.json")).ok();
             let calib = crate::capture::stereo_calib(&session, device_json.as_deref());
-            let cam = crate::replay::ClipCamera::open(&source)?;
+            let cam = crate::replay::ClipCamera::open(&source, Duration::from_secs_f64(gap))?;
             let worker = spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
-            server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap), hub).await?;
+            server::run(session, cam, c.exposure, c.gain, calib, Some(tap), hub).await?;
             worker
         }
         None => {
@@ -97,7 +102,7 @@ pub async fn watch(path: PathBuf, model: String, from: Option<PathBuf>) -> Resul
             {
                 let (cam, calib) = crate::capture::open_oak(&session)?;
                 let worker = spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
-                server::run(session, cam, c.exposure_us, c.gain, calib, Some(tap), hub).await?;
+                server::run(session, cam, c.exposure, c.gain, calib, Some(tap), hub).await?;
                 worker
             }
         }
@@ -159,7 +164,7 @@ fn detect_loop(
     let rectifier = session.rectifier(c.width, c.height);
     let mut watcher = Watcher::new(cfg.clone());
     let mut ring: VecDeque<(usize, Arc<StoredFrame>)> = VecDeque::new();
-    let preroll_ns = (cfg.preroll_s * 1e9) as u64;
+    let preroll_ns = (cfg.preroll * 1e9) as u64;
     let mut writer: Option<ClipWriter> = None;
     let mut index = 0usize;
     let mut taken = 0u64;
@@ -173,7 +178,7 @@ fn detect_loop(
             }
             let dt = meter.0.elapsed().as_secs_f64();
             if let Ok(mut s) = status.lock() {
-                s.fps = meter.1 as f64 / dt.max(1e-3);
+                s.rate = meter.1 as f64 / dt.max(1e-3);
                 s.lag = sent.load(Ordering::Relaxed).saturating_sub(taken);
                 s.state = match watcher.state() {
                     WatchState::Idle => "idle".into(),
@@ -242,7 +247,7 @@ fn detect_loop(
             } else if watcher.state() == WatchState::Episode {
                 let start = watcher.window_start().unwrap_or(index);
                 session
-                    .begin_clip(c.exposure_us, c.gain, 0.0, 0.0, calib)
+                    .begin_clip(c.exposure, c.gain, 0.0, 0.0, calib)
                     .and_then(|w| {
                         let mut w = w.without_depth();
                         for (_, f) in ring.iter().filter(|(i, _)| *i >= start) {
@@ -295,7 +300,7 @@ fn finish_episode(
                 height: c.height,
                 fps: c.fps,
                 frame_count: episode.frames.len(),
-                exposure_us: c.exposure_us,
+                exposure_us: c.exposure,
                 gain: c.gain,
                 sequence_gaps: false,
                 ir_flood: 0.0,
@@ -342,8 +347,8 @@ async fn coordinate(
                     format!(
                         "{id}: {} {:.1} mph launch {:.1}",
                         r.kind.as_str(),
-                        r.exit_velocity_mph,
-                        r.launch_angle_deg
+                        r.exit_velocity,
+                        r.launch_angle
                     )
                 })
                 .collect::<Vec<_>>()

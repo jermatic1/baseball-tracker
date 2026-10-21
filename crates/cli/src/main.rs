@@ -78,6 +78,9 @@ enum Command {
         /// Replay a recorded session's clips instead of opening the camera.
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Seconds of silence between replayed clips.
+        #[arg(long, default_value_t = 1.0)]
+        gap: f64,
     },
 }
 
@@ -115,18 +118,19 @@ async fn run() -> Result<(), String> {
             session,
             model,
             from,
-        } => watch(session, model, from).await,
+            gap,
+        } => watch(session, model, from, gap).await,
     }
 }
 
-async fn watch(dir: PathBuf, model: String, from: Option<PathBuf>) -> Result<(), String> {
+async fn watch(dir: PathBuf, model: String, from: Option<PathBuf>, gap: f64) -> Result<(), String> {
     #[cfg(feature = "detect")]
     {
-        watch::watch(dir, model, from).await
+        watch::watch(dir, model, from, gap).await
     }
     #[cfg(not(feature = "detect"))]
     {
-        let _ = (dir, model, from);
+        let _ = (dir, model, from, gap);
         Err("rebuild with --features detect".into())
     }
 }

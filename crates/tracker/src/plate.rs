@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 
 use crate::config::{MountConfig, SessionConfig};
 use crate::geom::{project, Intrinsics};
+use crate::units::{feet, metres};
 
 const INCH: f64 = 0.0254;
 
@@ -111,43 +112,41 @@ pub fn solve_pose(
         assignments.push(rev);
     }
     for px in assignments {
-        for rf in [true, false] {
-            let cost = |p: &[f64; 5]| -> f64 {
-                let mount = mount_from(p, rf);
-                let mut sum = 0.0;
-                for (field, &(u, v)) in PLATE_FIELD.iter().zip(px.iter()) {
-                    match project(*field, intr, &mount) {
-                        Some((pu, pv, z)) if z > 0.05 => {
-                            sum += (pu - u).powi(2) + (pv - v).powi(2);
-                        }
-                        _ => return 1e12,
+        let cost = |p: &[f64; 5]| -> f64 {
+            let mount = mount_from(p);
+            let mut sum = 0.0;
+            for (field, &(u, v)) in PLATE_FIELD.iter().zip(px.iter()) {
+                match project(*field, intr, &mount) {
+                    Some((pu, pv, z)) if z > 0.05 => {
+                        sum += (pu - u).powi(2) + (pv - v).powi(2);
                     }
+                    _ => return 1e12,
                 }
-                sum
-            };
-            let start = [
-                initial.distance_from_plate_m,
-                initial.height_m,
-                initial.lateral_offset_m,
-                initial.yaw_deg,
-                initial.pitch_deg,
-            ];
-            let (p, sum) = nelder_mead(cost, start, [0.3, 0.2, 0.3, 10.0, 10.0]);
-            let rms = (sum / 5.0).sqrt();
-            if best.as_ref().is_none_or(|b| rms < b.rms_px) {
-                let mount = mount_from(&p, rf);
-                let mut reprojected = [(0.0, 0.0); 5];
-                for (i, field) in PLATE_FIELD.iter().enumerate() {
-                    if let Some((u, v, _)) = project(*field, intr, &mount) {
-                        reprojected[i] = (u, v);
-                    }
-                }
-                best = Some(PoseFit {
-                    mount,
-                    rms_px: rms,
-                    reprojected,
-                });
             }
+            sum
+        };
+        let start = [
+            metres(initial.distance),
+            metres(initial.height),
+            metres(initial.lateral),
+            initial.yaw,
+            initial.pitch,
+        ];
+        let (p, sum) = nelder_mead(cost, start, [0.3, 0.2, 0.3, 10.0, 10.0]);
+        let rms = (sum / 5.0).sqrt();
+        if best.as_ref().is_none_or(|b| rms < b.rms_px) {
+            let mount = mount_from(&p);
+            let mut reprojected = [(0.0, 0.0); 5];
+            for (i, field) in PLATE_FIELD.iter().enumerate() {
+                if let Some((u, v, _)) = project(*field, intr, &mount) {
+                    reprojected[i] = (u, v);
+                }
+            }
+            best = Some(PoseFit {
+                mount,
+                rms_px: rms,
+                reprojected,
+            });
         }
     }
     best
@@ -166,15 +165,15 @@ pub fn calibrate_from_frame(
     (fit.rms_px <= MAX_RMS_PX).then_some((corners, fit))
 }
 
-fn mount_from(p: &[f64; 5], positive_depth_is_rf: bool) -> MountConfig {
+/// Metres and degrees from the optimiser into the feet of the config.
+fn mount_from(p: &[f64; 5]) -> MountConfig {
     let distance = p[0].max(0.3);
     MountConfig {
-        distance_from_plate_m: distance,
-        height_m: p[1],
-        lateral_offset_m: p[2].clamp(-distance, distance),
-        pitch_deg: p[4],
-        yaw_deg: p[3],
-        positive_depth_is_rf,
+        distance: feet(distance),
+        height: feet(p[1]),
+        lateral: feet(p[2].clamp(-distance, distance)),
+        pitch: p[4],
+        yaw: p[3],
     }
 }
 
@@ -461,12 +460,11 @@ mod tests {
     /// A side-view pose that keeps the plate inside the frame.
     fn rig() -> MountConfig {
         MountConfig {
-            distance_from_plate_m: 1.74,
-            height_m: 0.9,
-            lateral_offset_m: -1.61,
-            pitch_deg: 15.0,
-            yaw_deg: 23.0,
-            positive_depth_is_rf: true,
+            distance: feet(1.74),
+            height: feet(0.9),
+            lateral: feet(-1.61),
+            pitch: 15.0,
+            yaw: 23.0,
         }
     }
 
@@ -523,28 +521,21 @@ mod tests {
             );
         }
         let guess = MountConfig {
-            distance_from_plate_m: 2.1,
-            height_m: 0.8,
-            lateral_offset_m: -1.4,
-            pitch_deg: 22.0,
-            yaw_deg: 15.0,
-            positive_depth_is_rf: true,
+            distance: feet(2.1),
+            height: feet(0.8),
+            lateral: feet(-1.4),
+            pitch: 22.0,
+            yaw: 15.0,
         };
         let fit = solve_pose(&found, &intr, &guess).expect("pose");
         assert!(fit.rms_px < 1.0, "rms {}", fit.rms_px);
         let m = &fit.mount;
         let msg = format!("fit {m:?} vs {truth:?} rms {}", fit.rms_px);
-        assert!(
-            (m.distance_from_plate_m - truth.distance_from_plate_m).abs() < 0.02,
-            "{msg}"
-        );
-        assert!((m.height_m - truth.height_m).abs() < 0.02, "{msg}");
-        assert!(
-            (m.lateral_offset_m - truth.lateral_offset_m).abs() < 0.02,
-            "{msg}"
-        );
-        assert!((m.yaw_deg - truth.yaw_deg).abs() < 0.5, "{msg}");
-        assert!((m.pitch_deg - truth.pitch_deg).abs() < 0.5, "{msg}");
+        assert!((m.distance - truth.distance).abs() < 0.07, "{msg}");
+        assert!((m.height - truth.height).abs() < 0.07, "{msg}");
+        assert!((m.lateral - truth.lateral).abs() < 0.07, "{msg}");
+        assert!((m.yaw - truth.yaw).abs() < 0.5, "{msg}");
+        assert!((m.pitch - truth.pitch).abs() < 0.5, "{msg}");
     }
 
     #[test]
