@@ -2,6 +2,7 @@
 /.venv
 /dist
 /sessions
+/data*
 /models
 **/*.rs.bk
 .DS_Store
