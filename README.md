@@ -72,29 +72,32 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ## Usage
 
-Everything for one camera setup lives in a session directory under `sessions/`. A new session gets a `config.toml` from the defaults.
+Everything lives in a data directory, `data` by default (`DATA=` for another): the current `config.toml`, the camera calibration, `tracker.db` with users, sessions, and events, and clips. A new directory gets a `config.toml` from the defaults.
 
-1. **Start a session.** `task run SESSION=cage-1` opens the camera and serves the socket and a page on port 7880. The page is itself a client: live preview, exposure and gain controls, calibration, and a table of raw events.
-2. **Calibrate, once per camera placement.** With the plate clear and no ball on it, click Calibrate on the page or run `task calibrate SESSION=cage-1`. The camera pose is solved from the plate and written to `[mount]` in the session config.
-3. **Train the detector, once.** `task label SESSION=cage-1` serves a page on port 7881 for clicking the ball in recorded frames. `task train SESSION=cage-1` fine-tunes a detector on those labels and writes `models/ball.onnx`, which the session loads on start.
-4. **Hit.** While at least one client is connected, a moving ball is recorded, measured, broadcast to every client, and saved as a clip with its detections. A ball resting on the tee is ignored. With no client connected nothing is detected or recorded. Ctrl-c finishes the open clip.
-5. **Review.** `task review SESSION=cage-1` serves a page on port 7879 that plays each clip with detections drawn and lists every event: hit or pitch, hit type, speed, angles, pitch speed, and contact.
+A session is one user hitting or pitching, from start to end. Sessions are started and ended from the page or by a simulator, and every event during one is recorded under that user. Each session gets `sessions/<id>/` with a snapshot of the config and calibration and its own clips, so it can be reviewed or replayed on its own. Clips with no session active go under the data directory itself and are not recorded as events.
 
-Offline tools for recorded clips: Record and Stop on the page save a clip by hand (`task capture`), `task detect SESSION=cage-1` runs the detector over saved clips, and `task replay SESSION=cage-1` plays a recorded session back through the live path without a camera, with `GAP=5` for five seconds between clips.
+1. **Run.** `task run` opens the camera and serves the socket and a page on port 7880. The page is itself a client: live preview, exposure and gain controls, calibration, users and sessions, and a table of raw events.
+2. **Calibrate, once per camera placement.** With the plate clear and no ball on it, click Calibrate on the page or run `task calibrate`. The camera pose is solved from the plate and written to `[mount]` in the config.
+3. **Train the detector, once.** `task label` serves a page on port 7881 for clicking the ball in recorded frames. `task train` fine-tunes a detector on those labels and writes `models/ball.onnx`, which is loaded on start.
+4. **Hit.** Add a user on the page and start a session. While at least one client is connected, a moving ball is recorded, measured, broadcast to every client, and saved as a clip with its detections. A ball resting on the tee is ignored. With no client connected nothing is detected or recorded. Ctrl-c finishes the open clip.
+5. **Review.** `task review DATA=data/sessions/3` serves a page on port 7879 that plays each clip with detections drawn and lists every event: hit or pitch, hit type, speed, angles, pitch speed, location and call, and contact.
 
-With the prebuilt bundle, run the executable directly: `./tracker watch sessions/cage-1`.
+Offline tools for recorded clips: Record and Stop on the page save a clip by hand (`task capture`), `task detect` runs the detector over saved clips, and `task replay FROM=data/sessions/3` plays a session back through the live path without a camera, with `GAP=5` for five seconds between clips.
+
+With the prebuilt bundle, run the executable directly: `./tracker watch data`.
 
 ## Configuration
 
-`config.example.toml` documents every section of a session's `config.toml`. Distances are feet, speeds mph.
+`config.example.toml` documents every section of `config.toml`. Distances are feet, speeds mph.
 
 - `[capture]`: size, frame rate, exposure, gain. If the page shows frame gaps, lower `fps`.
 - `[mount]`: camera pose relative to the plate. Written by calibrate.
-- `[stereo]`: disparity offset for sessions recorded without the camera's saved calibration. New sessions do not need it.
+- `[stereo]`: disparity offset for clips recorded without the camera's saved calibration. New directories do not need it.
 - `[tracking]`: the slowest batted ball reported as a hit, 15 mph by default. Pitches are recorded at any speed.
 - `[watch]`: how far a ball must move to start a clip, the pre-roll and settle times around the motion, and whether clip frames are kept.
 - `[pitching]`: where the pitcher actually throws from and the mound distance each pitch's plate location is projected to.
 - `[flight]`: altitude, for the predicted carry of a hit.
+- `[zone]`: the strike zone in inches, which every pitch is called against.
 
 ## Socket
 
@@ -102,8 +105,10 @@ Simulators connect to `ws://<tracker>:7880/ws`. Messages are JSON with a `type` 
 
 To find the tracker, broadcast `{"type": "discover", "version": 1}` to UDP port 7881 on the local network. The tracker answers the sender with `{"type": "tracker", "version": 1, "port": 7880, "path": "/ws", "name": "<hostname>"}`; the address is the reply's source IP. If the tracker machine runs a firewall, allow TCP 7880 and UDP 7881 in.
 
-Client to tracker: `hello {client}` first, then `preview {enabled}`, `set {exposure, gain, ir_flood, ir_dot}` with any subset, `record {action: start|stop}`, and `calibrate {action: start|apply|stop}`.
+Client to tracker: `hello {client, games}` first, then `preview {enabled}`, `set {exposure, gain, ir_flood, ir_dot}` with any subset, `record {action: start|stop}`, `calibrate {action: start|apply|stop}`, `add_user {name}`, `start_session {user, activity: hitting|pitching, mode: game|practice}`, and `end_session {session}`. Unknown message types are ignored.
 
-Tracker to clients: `status` twice a second (camera and detector rates, connected clients, whether capturing, calibrating, or recording, current controls and mount), `event {clip, record}` for each hit, pitch, or bounce, `calibration {found, corners, reprojected, rms, mount, applied}` while calibrating, and `error {message}` to the sender of a bad command.
+Tracker to clients: `users {users: [{id, name}]}` and `session {session: null | {id, user, activity, mode}}` after hello and whenever they change, `session_summary {session, user, lines: [{label, value}]}` when a session ends and again after hello for the most recent one, `status` twice a second (camera and detector rates, connected clients, whether capturing, calibrating, or recording, current controls and mount), `event {clip, record}` for each hit, pitch, or bounce, `calibration {found, corners, reprojected, rms, mount, applied}` while calibrating, and `error {request, message}` to the sender of a bad command.
 
-An event record carries `kind`, `hit_type`, `exit_velocity`, `launch_angle`, `spray_angle`, `pitch_velocity` when a toss was tracked, `contact` with the field-frame point and whether it was ground or net, `start`, `samples`, and `confident`. A hit adds `hit`: the predicted `carry`, `hang_time`, `peak_height`, `landing`, and a `path` of about ten points a second for animation. A pitch adds `pitch`: `plate_velocity` and its `location` at the front of the plate, with `simulated_location` for the same throw from the configured mound distance. The field frame is plate at the origin, +X toward right field, +Y up, -Z toward center field.
+Starting a session while one is active ends it: the old session's summary is sent, then the new session. Ending one sends the null session, then its summary.
+
+An event record carries `kind`, `hit_type`, `exit_velocity`, `launch_angle`, `spray_angle`, `pitch_velocity` when a toss was tracked, `contact` with the field-frame point and whether it was ground or net, `start`, `samples`, and `confident`. A hit adds `hit`: the predicted `carry`, `hang_time`, `peak_height`, `landing`, and a `path` of about ten points a second for animation. A pitch adds `pitch`: `plate_velocity`, its `location` at the front of the plate, `simulated_location` for the same throw from the configured mound distance, and the `call` (`ball` or `strike`) made on that simulated crossing against the `zone` it was judged by. The field frame is plate at the origin, +X toward right field, +Y up, -Z toward center field.

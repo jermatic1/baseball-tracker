@@ -38,44 +38,44 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Capture {
-        session: PathBuf,
+        data: PathBuf,
         #[arg(long)]
         demo: bool,
         #[arg(long)]
         once: bool,
     },
-    /// Solve the camera pose from the home plate and write it to the session.
+    /// Solve the camera pose from the home plate and write it to the data directory.
     Calibrate {
-        session: PathBuf,
+        data: PathBuf,
     },
     Review {
-        session: PathBuf,
+        data: PathBuf,
         #[arg(long, default_value = "127.0.0.1:7879")]
         bind: SocketAddr,
     },
     Label {
-        session: PathBuf,
+        data: PathBuf,
         #[arg(long, default_value = "0.0.0.0:7881")]
         bind: SocketAddr,
     },
     Synth {
-        session: PathBuf,
+        data: PathBuf,
     },
     Detect {
-        session: PathBuf,
+        data: PathBuf,
         #[arg(long, default_value = "models/ball.onnx")]
         model: String,
         #[arg(long)]
         clip: Option<String>,
     },
-    /// Run a live session: serve the socket, and while a client is
+    /// Track live: serve the socket, and while a client is
     /// connected find the ball in every frame, measure each hit or throw,
     /// broadcast it, and save the clip.
     Watch {
-        session: PathBuf,
+        data: PathBuf,
         #[arg(long, default_value = "models/ball.onnx")]
         model: String,
-        /// Replay a recorded session's clips instead of opening the camera.
+        /// Replay recorded clips instead of opening the camera.
         #[arg(long)]
         from: Option<PathBuf>,
         /// Seconds of silence between replayed clips.
@@ -100,26 +100,18 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     match Cli::parse().command {
-        Command::Capture {
-            session,
-            demo,
-            once,
-        } => capture(session, demo, once).await,
-        Command::Calibrate { session } => calibrate(session),
-        Command::Review { session, bind } => review(session, bind).await,
-        Command::Label { session, bind } => label(session, bind).await,
-        Command::Synth { session } => synth(session),
-        Command::Detect {
-            session,
-            model,
-            clip,
-        } => detect(session, model, clip).await,
+        Command::Capture { data, demo, once } => capture(data, demo, once).await,
+        Command::Calibrate { data } => calibrate(data),
+        Command::Review { data, bind } => review(data, bind).await,
+        Command::Label { data, bind } => label(data, bind).await,
+        Command::Synth { data } => synth(data),
+        Command::Detect { data, model, clip } => detect(data, model, clip).await,
         Command::Watch {
-            session,
+            data,
             model,
             from,
             gap,
-        } => watch(session, model, from, gap).await,
+        } => watch(data, model, from, gap).await,
     }
 }
 

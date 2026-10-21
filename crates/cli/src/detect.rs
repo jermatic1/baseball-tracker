@@ -6,7 +6,7 @@ use tracker::{DetFrame, Detections, StereoCalib};
 use crate::detector::{Detector, FrameView};
 
 pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Result<(), String> {
-    let session = tracker::Session::open(&path).map_err(|e| e.to_string())?;
+    let session = tracker::DataDir::open(&path).map_err(|e| e.to_string())?;
     let mut detector = Detector::load(&model)?;
     let mut ids = session.clip_ids().map_err(|e| e.to_string())?;
     if let Some(clip) = clip {

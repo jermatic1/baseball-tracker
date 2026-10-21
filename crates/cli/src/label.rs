@@ -41,14 +41,14 @@ struct Drawn {
 }
 
 struct LabelState {
-    session: tracker::Session,
+    session: tracker::DataDir,
     path: PathBuf,
     labels: LabelFile,
     cached: Option<(String, tracker::Clip)>,
 }
 
 pub async fn label(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
-    let session = tracker::Session::open(&path).map_err(|e| e.to_string())?;
+    let session = tracker::DataDir::open(&path).map_err(|e| e.to_string())?;
     let file = session.dir.join("labels.json");
     let labels = read_labels(&file)?;
     let state = Arc::new(Mutex::new(LabelState {

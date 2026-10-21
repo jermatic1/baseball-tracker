@@ -1,6 +1,6 @@
 """Fine-tune YOLO26n on labeled tracker frames and export ONNX.
 
-Reads sessions/<name>/labels.json written by `tracker label`.
+Reads <data>/labels.json written by `tracker label`.
 Python is only this export step. The tracker loads the ONNX.
 """
 

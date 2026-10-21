@@ -16,7 +16,7 @@ pub async fn capture(path: PathBuf, demo: bool, once: bool) -> Result<(), String
 }
 
 fn capture_demo(path: PathBuf) -> Result<(), String> {
-    let session = tracker::Session::create(&path).map_err(|e| e.to_string())?;
+    let session = tracker::DataDir::create(&path).map_err(|e| e.to_string())?;
     let width = session.config.capture.width;
     let height = session.config.capture.height;
     let fps = session.config.capture.fps as f32;
@@ -62,7 +62,7 @@ async fn capture_oak(_path: PathBuf) -> Result<(), String> {
 
 #[cfg(feature = "oak")]
 fn capture_once(path: PathBuf) -> Result<(), String> {
-    let session = tracker::Session::create(&path).map_err(|e| e.to_string())?;
+    let session = tracker::DataDir::create(&path).map_err(|e| e.to_string())?;
     let width = session.config.capture.width;
     let height = session.config.capture.height;
     let fps = session.config.capture.fps as f32;
@@ -92,11 +92,11 @@ fn capture_once(path: PathBuf) -> Result<(), String> {
 
 #[cfg(feature = "oak")]
 async fn capture_oak(path: PathBuf) -> Result<(), String> {
-    let session = tracker::Session::create(&path).map_err(|e| e.to_string())?;
+    let session = tracker::DataDir::create(&path).map_err(|e| e.to_string())?;
     let exposure_us = session.config.capture.exposure;
     let gain = session.config.capture.gain;
     let (cam, calib) = open_oak(&session)?;
-    let hub = crate::hub::Hub::new(session.config.clone());
+    let hub = crate::hub::Hub::open(session.clone())?;
     server::run(session, cam, exposure_us, gain, calib, None, hub).await
 }
 
@@ -104,7 +104,7 @@ async fn capture_oak(path: PathBuf) -> Result<(), String> {
 /// into the session.
 #[cfg(feature = "oak")]
 pub(crate) fn open_oak(
-    session: &tracker::Session,
+    session: &tracker::DataDir,
 ) -> Result<(device::OakCamera, tracker::StereoCalib), String> {
     let c = &session.config.capture;
     let cam = device::OakCamera::open(
@@ -125,7 +125,7 @@ pub(crate) fn open_oak(
 /// Stereo geometry for point depth: the device calibration when the session
 /// has one, else the nominal rig with the configured disparity offset.
 pub(crate) fn stereo_calib(
-    session: &tracker::Session,
+    session: &tracker::DataDir,
     device_json: Option<&str>,
 ) -> tracker::StereoCalib {
     let c = &session.config.capture;
@@ -200,7 +200,7 @@ pub(crate) mod server {
         ir_flood: f32,
         ir_dot: f32,
         calib: tracker::StereoCalib,
-        session: tracker::Session,
+        session: tracker::DataDir,
         record_tx: Option<SyncSender<Option<Arc<tracker::StoredFrame>>>>,
         record_drops: Arc<AtomicU64>,
         record_done: Option<Receiver<Result<String, String>>>,
@@ -219,7 +219,7 @@ pub(crate) mod server {
 
     #[allow(clippy::too_many_arguments)]
     pub async fn run<C: Camera + Send + 'static>(
-        session: tracker::Session,
+        session: tracker::DataDir,
         cam: C,
         exposure_us: u32,
         gain: u32,
@@ -389,10 +389,12 @@ pub(crate) mod server {
         let id = loop {
             match stream.next().await {
                 Some(Ok(Message::Text(text))) => match serde_json::from_str::<ClientMsg>(&text) {
-                    Ok(ClientMsg::Hello { client }) => break app.hub.join(&client),
+                    Ok(ClientMsg::Hello { client, games, .. }) => {
+                        break app.hub.join(&client, &games)
+                    }
                     _ => {
                         let _ = sink
-                            .send(Message::Text(error_text("say hello first").into()))
+                            .send(Message::Text(error_text(None, "say hello first").into()))
                             .await;
                         return;
                     }
@@ -404,6 +406,11 @@ pub(crate) mod server {
         let preview = Arc::new(AtomicBool::new(false));
         let (direct_tx, mut direct_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let mut rx = app.hub.tx.subscribe();
+        for msg in app.hub.welcome() {
+            if let Ok(text) = serde_json::to_string(&msg) {
+                let _ = direct_tx.send(text);
+            }
+        }
         let wants_preview = Arc::clone(&preview);
         let writer = tokio::spawn(async move {
             loop {
@@ -450,12 +457,12 @@ pub(crate) mod server {
                 Message::Close(_) => break,
                 _ => continue,
             };
-            let outcome = match serde_json::from_str::<ClientMsg>(&text) {
-                Ok(cmd) => handle_command(cmd, &app, &preview).await,
-                Err(e) => Err(format!("bad message: {e}")),
+            let (request, outcome) = match serde_json::from_str::<ClientMsg>(&text) {
+                Ok(cmd) => (Some(cmd.name()), handle_command(cmd, &app, &preview).await),
+                Err(e) => (None, Err(format!("bad message: {e}"))),
             };
             if let Err(message) = outcome {
-                let _ = direct_tx.send(error_text(&message));
+                let _ = direct_tx.send(error_text(request, &message));
             }
         }
         if preview.swap(false, Ordering::Relaxed) {
@@ -465,8 +472,9 @@ pub(crate) mod server {
         writer.abort();
     }
 
-    fn error_text(message: &str) -> String {
+    fn error_text(request: Option<&str>, message: &str) -> String {
         serde_json::to_string(&ServerMsg::Error {
+            request: request.map(str::to_string),
             message: message.to_string(),
         })
         .unwrap_or_default()
@@ -478,7 +486,14 @@ pub(crate) mod server {
         preview: &Arc<AtomicBool>,
     ) -> Result<(), String> {
         match cmd {
-            ClientMsg::Hello { .. } => Ok(()),
+            ClientMsg::Hello { .. } | ClientMsg::Unknown => Ok(()),
+            ClientMsg::AddUser { name } => app.hub.add_user(&name),
+            ClientMsg::StartSession {
+                user,
+                activity,
+                mode,
+            } => app.hub.start_session(&user, activity, mode),
+            ClientMsg::EndSession { session } => app.hub.end_session(&session),
             ClientMsg::Preview { enabled } => {
                 if preview.swap(enabled, Ordering::Relaxed) != enabled {
                     if enabled {

@@ -13,13 +13,13 @@ use crate::error::AppError;
 use crate::jpeg::encode_gray_jpeg;
 
 struct ReviewState {
-    session: tracker::Session,
+    session: tracker::DataDir,
     hits: Vec<tracker::HitRecord>,
     cached: Option<(String, tracker::Clip)>,
 }
 
 pub async fn review(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
-    let session = tracker::Session::open(&path).map_err(|e| e.to_string())?;
+    let session = tracker::DataDir::open(&path).map_err(|e| e.to_string())?;
     let hits = tracker::recompute_hits(&session).map_err(|e| e.to_string())?;
     session.write_hits(&hits).map_err(|e| e.to_string())?;
     for hit in &hits {

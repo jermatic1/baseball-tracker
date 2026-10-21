@@ -12,7 +12,7 @@ pub fn calibrate(path: PathBuf) -> Result<(), String> {
     use device::Camera;
     use std::time::{Duration, Instant};
 
-    let mut session = tracker::Session::create(&path).map_err(|e| e.to_string())?;
+    let mut session = tracker::DataDir::create(&path).map_err(|e| e.to_string())?;
     let c = &session.config.capture;
     let mut cam = device::OakCamera::open(c.width, c.height, c.fps as f32, c.exposure, c.gain)?;
     let deadline = Instant::now() + Duration::from_secs(10);

@@ -1,7 +1,7 @@
 //! Where a batted ball goes after the camera loses it: RK4 under gravity
 //! and drag. Spin is not measured, so none is assumed.
 
-use crate::session::{HitFlight, Landing};
+use crate::clips::{HitFlight, Landing};
 use crate::units::feet;
 
 const BALL_RADIUS_M: f64 = 0.0368;
