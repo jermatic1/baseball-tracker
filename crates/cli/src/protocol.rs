@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracker::{Activity, HitRecord, Mode, MountConfig, Session, SummaryLine, User};
+use tracker::{Activity, HitRecord, Mode, MountConfig, Session, SessionStats, SummaryLine, User};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -121,6 +121,13 @@ pub enum ServerMsg {
     /// The whole current session state; sent after hello and on every change.
     Session {
         session: Option<SessionInfo>,
+    },
+    /// Running numbers for the active session: sent when it starts, after
+    /// each of its events, and after hello while it is active.
+    SessionStats {
+        session: String,
+        #[serde(flatten)]
+        stats: SessionStats,
     },
     /// Display-ready lines for a session that just ended, resent after hello.
     SessionSummary {
@@ -369,6 +376,18 @@ mod tests {
         roundtrip(ServerMsg::Game {
             game: "challenges".into(),
             body: serde_json::json!({"type": "batter", "id": "b1"}),
+        });
+        roundtrip(ServerMsg::SessionStats {
+            session: "42".into(),
+            stats: SessionStats {
+                pitches: 2,
+                strikes: 1,
+                avg_pitch_mph: Some(39.8),
+                top_pitch_mph: Some(44.2),
+                avg_exit_mph: None,
+                top_exit_mph: None,
+                longest_ft: None,
+            },
         });
         roundtrip(ServerMsg::SessionSummary {
             session: "42".into(),

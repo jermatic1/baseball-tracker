@@ -27,6 +27,48 @@ fn mean(values: &[f64]) -> Option<f64> {
     (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
 }
 
+/// Running numbers for a session, computed from the same events as the
+/// summary so the two agree. A value with nothing behind it is `None`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionStats {
+    pub pitches: usize,
+    pub strikes: usize,
+    pub avg_pitch_mph: Option<f64>,
+    pub top_pitch_mph: Option<f64>,
+    pub avg_exit_mph: Option<f64>,
+    pub top_exit_mph: Option<f64>,
+    pub longest_ft: Option<f64>,
+}
+
+fn tenths(v: Option<f64>) -> Option<f64> {
+    v.map(|v| (v * 10.0).round() / 10.0)
+}
+
+pub fn session_stats(events: &[HitRecord]) -> SessionStats {
+    let pitches: Vec<&HitRecord> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::Pitch)
+        .collect();
+    let hits: Vec<&HitRecord> = events.iter().filter(|e| e.kind == EventKind::Hit).collect();
+    let pitch_speeds: Vec<f64> = pitches.iter().map(|p| p.exit_velocity).collect();
+    let exit_speeds: Vec<f64> = hits.iter().map(|h| h.exit_velocity).collect();
+    SessionStats {
+        pitches: pitches.len(),
+        strikes: pitches
+            .iter()
+            .filter(|p| p.pitch.is_some_and(|p| p.call == Call::Strike))
+            .count(),
+        avg_pitch_mph: tenths(mean(&pitch_speeds)),
+        top_pitch_mph: tenths(max(pitch_speeds.iter().copied())),
+        avg_exit_mph: tenths(mean(&exit_speeds)),
+        top_exit_mph: tenths(max(exit_speeds.iter().copied())),
+        longest_ft: tenths(max(hits
+            .iter()
+            .filter_map(|h| h.hit.as_ref())
+            .map(|f| f.carry))),
+    }
+}
+
 pub fn summary_lines(activity: Activity, events: &[HitRecord]) -> Vec<SummaryLine> {
     match activity {
         Activity::Hitting => hitting(events),
@@ -198,5 +240,31 @@ mod tests {
                 assert!(l.value.len() <= 10, "{}", l.value);
             }
         }
+    }
+
+    #[test]
+    fn session_stats_count_both_kinds_and_leave_missing_values_empty() {
+        assert_eq!(
+            session_stats(&[]),
+            SessionStats {
+                pitches: 0,
+                strikes: 0,
+                avg_pitch_mph: None,
+                top_pitch_mph: None,
+                avg_exit_mph: None,
+                top_exit_mph: None,
+                longest_ft: None,
+            }
+        );
+        let s = session_stats(&[
+            pitch(40.0, Call::Strike),
+            pitch(44.25, Call::Ball),
+            hit(60.0, 142.5),
+            hit(50.0, 100.0),
+        ]);
+        assert_eq!((s.pitches, s.strikes), (2, 1));
+        assert_eq!((s.avg_pitch_mph, s.top_pitch_mph), (Some(42.1), Some(44.3)));
+        assert_eq!((s.avg_exit_mph, s.top_exit_mph), (Some(55.0), Some(60.0)));
+        assert_eq!(s.longest_ft, Some(142.5));
     }
 }
