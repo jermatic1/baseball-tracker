@@ -11,7 +11,7 @@ use tracker::geom::launch_velocity;
 use tracker::units::metres;
 use tracker::{
     flight, Activity, ClipMeta, Config, DataDir, EventKind, HitRecord, HitType, Location,
-    PitchPlate, Rng,
+    PitchPlate, Rng, Store,
 };
 
 use crate::capture::server;
@@ -19,7 +19,9 @@ use crate::hub::Hub;
 
 pub async fn mock(path: PathBuf, period: f64) -> Result<(), String> {
     let data = DataDir::create(&path).map_err(|e| e.to_string())?;
-    let hub = Hub::open(data.clone())?;
+    let store = Store::open(data.dir.join("tracker.db")).map_err(|e| e.to_string())?;
+    seed(&store)?;
+    let hub = Hub::with_store(data.clone(), store)?;
     #[cfg(feature = "challenges")]
     hub.register(Box::new(challenges::Challenges::load(&data.dir)?));
     let c = data.config.capture.clone();
@@ -31,6 +33,14 @@ pub async fn mock(path: PathBuf, period: f64) -> Result<(), String> {
     let result = server::run(data, cam, c.exposure, c.gain, calib, None, hub).await;
     generator.abort();
     result
+}
+
+/// Give an empty store one user so a client can start a session right away.
+fn seed(store: &Store) -> Result<(), String> {
+    if store.users().map_err(|e| e.to_string())?.is_empty() {
+        store.add_user("Demo").map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 async fn generate(hub: Arc<Hub>, period: Duration) {
@@ -155,6 +165,16 @@ pub fn mock_hit(rng: &mut Rng, cfg: &Config, clip: &str) -> HitRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeding_adds_one_user_once() {
+        let store = Store::in_memory().unwrap();
+        seed(&store).unwrap();
+        seed(&store).unwrap();
+        let users = store.users().unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].name, "Demo");
+    }
 
     #[test]
     fn mock_events_look_like_real_ones() {
