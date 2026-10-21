@@ -84,6 +84,8 @@ A session is one user hitting or pitching, from start to end. Sessions are start
 
 Offline tools for recorded clips: Record and Stop on the setup page save a clip by hand (`task capture`), `task detect` runs the detector over saved clips, and `task replay FROM=data/sessions/3` plays a session back through the live path without a camera, with `GAP=5` for five seconds between clips.
 
+`task mock` serves the same socket and pages with no camera, making up a pitch or hit every few seconds (`PERIOD=` for another interval), so simulators and pages can be worked on anywhere. Sessions, games, and summaries all run as they would live.
+
 With the prebuilt bundle, run the executable directly: `./tracker watch data`.
 
 ## Configuration

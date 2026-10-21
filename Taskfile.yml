@@ -54,6 +54,11 @@ tasks:
     cmds:
       - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}}
 
+  mock:
+    desc: Serve the socket with no camera, making up a pitch or hit every PERIOD seconds
+    cmds:
+      - cargo run -p cli --quiet -- mock {{.DATA}}-mock --period {{.PERIOD | default "4"}}
+
   check:
     desc: Format, lint, and test
     cmds:

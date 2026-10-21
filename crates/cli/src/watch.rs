@@ -13,15 +13,15 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracker::{
-    merge_clip_hits, process_clip, ClipMeta, ClipWriter, DataDir, Detections, Episode, Intrinsics,
-    StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
+    process_clip, ClipMeta, ClipWriter, DataDir, Detections, Episode, Intrinsics, StereoCalib,
+    StoredFrame, WatchConfig, WatchState, Watcher,
 };
 
 use crate::capture::server::{self, LiveTap};
 use crate::convert::print_hit;
 use crate::detector::{Detector, FrameView};
 use crate::hub::Hub;
-use crate::protocol::{LiveStatus, ServerMsg};
+use crate::protocol::LiveStatus;
 
 /// Frames queued for the detector before the newest are dropped: about
 /// three seconds.
@@ -383,20 +383,7 @@ async fn coordinate(
         for r in &records {
             print_hit(r);
         }
-        let existing = dir.hits().map_err(|e| e.to_string())?;
-        let hits = merge_clip_hits(existing, &id, records.clone());
-        dir.write_hits(&hits).map_err(|e| e.to_string())?;
-        if let Some(session) = session {
-            for record in &records {
-                hub.record_event(session, record)?;
-            }
-        }
-        for record in records {
-            hub.send(&ServerMsg::Event {
-                clip: id.clone(),
-                record,
-            });
-        }
+        hub.publish(&dir, session, &id, records)?;
         if let Ok(mut s) = status.lock() {
             s.clips += 1;
             s.last_event = summary;

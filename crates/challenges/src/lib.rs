@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracker::geom::launch_velocity;
 use tracker::{
-    flight, Activity, Call, EventKind, Game, HitRecord, HitType, Session, SummaryLine, User,
+    flight, Activity, Call, EventKind, Game, HitRecord, HitType, Rng, Session, SummaryLine, User,
 };
 
 const EXAMPLE: &str = include_str!("../example.toml");
@@ -297,39 +297,6 @@ pub enum In {
         #[serde(default)]
         runs: Option<u32>,
     },
-}
-
-/// xorshift64*, enough randomness for a batter and reproducible in tests.
-struct Rng(u64);
-
-impl Rng {
-    fn seeded() -> Self {
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(1);
-        Self(t | 1)
-    }
-
-    fn next(&mut self) -> f64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
-    }
-
-    fn chance(&mut self, p: f64) -> bool {
-        self.next() < p
-    }
-
-    fn between(&mut self, lo: f64, hi: f64) -> f64 {
-        lo + (hi - lo) * self.next()
-    }
-
-    /// Roughly normal, mean 0, standard deviation about 1.
-    fn normal(&mut self) -> f64 {
-        (self.next() + self.next() + self.next() - 1.5) * 2.0
-    }
 }
 
 /// The lineup of the active pitching session and how it is going.
@@ -629,7 +596,7 @@ mod tests {
             Connection::open_in_memory().unwrap(),
         )
         .unwrap();
-        g.rng = Rng(7);
+        g.rng = Rng::with_seed(7);
         g
     }
 
