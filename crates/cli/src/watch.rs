@@ -53,6 +53,8 @@ pub async fn watch(
     let session = DataDir::create(&path).map_err(|e| e.to_string())?;
     let detector = Detector::load(&model)?;
     let hub = Hub::open(session.clone())?;
+    #[cfg(feature = "challenges")]
+    hub.register(Box::new(challenges::Challenges::load(&session.dir)?));
     let status = Arc::new(Mutex::new(LiveStatus {
         provider: detector.provider().to_string(),
         state: "idle".into(),

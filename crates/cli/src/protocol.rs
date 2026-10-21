@@ -3,6 +3,7 @@
 //! exposure in microseconds.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracker::{Activity, HitRecord, Mode, MountConfig, Session, SummaryLine, User};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +53,11 @@ pub enum ClientMsg {
     EndSession {
         session: String,
     },
+    /// A body for a game module, which core routes without reading.
+    Game {
+        game: String,
+        body: Value,
+    },
     /// A type this tracker does not know; ignored so clients can grow.
     #[serde(other)]
     Unknown,
@@ -69,6 +75,7 @@ impl ClientMsg {
             ClientMsg::AddUser { .. } => "add_user",
             ClientMsg::StartSession { .. } => "start_session",
             ClientMsg::EndSession { .. } => "end_session",
+            ClientMsg::Game { .. } => "game",
             ClientMsg::Unknown => "unknown",
         }
     }
@@ -120,6 +127,11 @@ pub enum ServerMsg {
         session: String,
         user: String,
         lines: Vec<SummaryLine>,
+    },
+    /// A body from a game module, sent only to clients that listed the game.
+    Game {
+        game: String,
+        body: Value,
     },
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,6 +253,10 @@ mod tests {
         roundtrip(ClientMsg::EndSession {
             session: "42".into(),
         });
+        roundtrip(ClientMsg::Game {
+            game: "challenges".into(),
+            body: serde_json::json!({"type": "result", "result": "single"}),
+        });
         roundtrip(ClientMsg::Preview { enabled: true });
         roundtrip(ClientMsg::Set {
             exposure: Some(500),
@@ -350,6 +366,10 @@ mod tests {
             }],
         });
         roundtrip(ServerMsg::Session { session: None });
+        roundtrip(ServerMsg::Game {
+            game: "challenges".into(),
+            body: serde_json::json!({"type": "batter", "id": "b1"}),
+        });
         roundtrip(ServerMsg::SessionSummary {
             session: "42".into(),
             user: "1".into(),

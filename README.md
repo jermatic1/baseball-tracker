@@ -99,15 +99,21 @@ With the prebuilt bundle, run the executable directly: `./tracker watch data`.
 - `[flight]`: altitude, for the predicted carry of a hit.
 - `[zone]`: the strike zone in inches, which every pitch is called against.
 
+## Games
+
+A game module runs the game side of a session inside the tracker: it sees every session change and event, exchanges opaque bodies with the simulators that list it in their hello, and may add lines to the session summary. Modules are compiled in behind Cargo features and have a page under `/games/<name>`.
+
+`challenges` is the first, for pitching: the user pitches to a lineup of CPU batters, each with a goal such as throwing high or bringing the heat. The tracker judges every pitch against the goal, decides how the batter responds, and the simulator flies any batted ball and reports the plate appearance's result. Batters, goals, and lineups are in `challenges.toml` in the data directory, written with an example on first run.
+
 ## Socket
 
 Simulators connect to `ws://<tracker>:7880/ws`. Messages are JSON with a `type` field; preview frames are binary JPEGs. Feet, inches, mph, degrees, and seconds throughout.
 
 To find the tracker, broadcast `{"type": "discover", "version": 1}` to UDP port 7881 on the local network. The tracker answers the sender with `{"type": "tracker", "version": 1, "port": 7880, "path": "/ws", "name": "<hostname>"}`; the address is the reply's source IP. If the tracker machine runs a firewall, allow TCP 7880 and UDP 7881 in.
 
-Client to tracker: `hello {client, games}` first, then `preview {enabled}`, `set {exposure, gain, ir_flood, ir_dot}` with any subset, `record {action: start|stop}`, `calibrate {action: start|apply|stop}`, `add_user {name}`, `start_session {user, activity: hitting|pitching, mode: game|practice}`, and `end_session {session}`. Unknown message types are ignored.
+Client to tracker: `hello {client, games}` first, then `preview {enabled}`, `set {exposure, gain, ir_flood, ir_dot}` with any subset, `record {action: start|stop}`, `calibrate {action: start|apply|stop}`, `add_user {name}`, `start_session {user, activity: hitting|pitching, mode: game|practice}`, `end_session {session}`, and `game {game, body}` for a game module. Unknown message types are ignored.
 
-Tracker to clients: `users {users: [{id, name}]}` and `session {session: null | {id, user, activity, mode}}` after hello and whenever they change, `session_summary {session, user, lines: [{label, value}]}` when a session ends and again after hello for the most recent one, `status` twice a second (camera and detector rates, connected clients, whether capturing, calibrating, or recording, current controls and mount), `event {clip, record}` for each hit, pitch, or bounce, `calibration {found, corners, reprojected, rms, mount, applied}` while calibrating, and `error {request, message}` to the sender of a bad command.
+Tracker to clients: `users {users: [{id, name}]}` and `session {session: null | {id, user, activity, mode}}` after hello and whenever they change, `session_summary {session, user, lines: [{label, value}]}` when a session ends and again after hello for the most recent one, `status` twice a second (camera and detector rates, connected clients, whether capturing, calibrating, or recording, current controls and mount), `event {clip, record}` for each hit, pitch, or bounce, `calibration {found, corners, reprojected, rms, mount, applied}` while calibrating, `game {game, body}` from a module to the clients that listed it, and `error {request, message}` to the sender of a bad command.
 
 Starting a session while one is active ends it: the old session's summary is sent, then the new session. Ending one sends the null session, then its summary.
 

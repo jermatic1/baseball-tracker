@@ -575,6 +575,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "challenges"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracker",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -640,6 +651,7 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "challenges",
  "clap",
  "device",
  "futures-util",

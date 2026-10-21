@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>challenges</title>
+<link rel="stylesheet" href="/page.css">
+</head>
+<body>
+<nav><a href="/">Tracker</a><a href="/setup">Setup</a></nav>
+<h1>Challenges</h1>
+<div id="session" class="mono">connecting</div>
+<div id="batter" class="mono"></div>
+<div id="roster" class="mono"></div>
+<div id="status"></div>
+<table id="pitches">
+  <thead><tr><th>clip</th><th>mph</th><th>location</th><th>call</th><th>goal</th><th>swing</th><th>batted</th></tr></thead>
+  <tbody></tbody>
+</table>
+<table id="results">
+  <thead><tr><th>batter</th><th>result</th></tr></thead>
+  <tbody></tbody>
+</table>
+<p>Batters, goals, and plans are in <code>challenges.toml</code> in the data directory, read when the tracker starts.</p>
+<script src="/page.js"></script>
+<script>
+const sessionEl = document.getElementById("session");
+const batterEl = document.getElementById("batter");
+const rosterEl = document.getElementById("roster");
+const statusEl = document.getElementById("status");
+const pitches = document.querySelector("#pitches tbody");
+const results = document.querySelector("#results tbody");
+let roster = [];
+let current = null;
+let pending = null;
+
+const batterName = (id) => (roster.find((b) => b.id === id) || { name: id }).name;
+
+connect("challenges page", {
+  open() { statusEl.textContent = ""; },
+  close() { sessionEl.textContent = "disconnected, retrying"; },
+  session(m) {
+    sessionEl.textContent = m.session
+      ? `session ${m.session.id}: ${m.session.activity}, ${m.session.mode}`
+      : "no session";
+    if (!m.session) { batterEl.textContent = ""; rosterEl.textContent = ""; }
+  },
+  event(m) {
+    const r = m.record;
+    if (r.kind !== "pitch" || !r.pitch) return;
+    const row = document.createElement("tr");
+    const l = r.pitch.simulated_location;
+    [m.clip, r.exit_velocity.toFixed(1), `${l.side.toFixed(0)}, ${l.height.toFixed(0)} in`, r.pitch.call, "", "", ""]
+      .forEach((v) => cell(row, v));
+    pitches.prepend(row);
+    pending = row;
+    while (pitches.children.length > 20) pitches.lastChild.remove();
+  },
+  game(m) {
+    const b = m.body;
+    if (b.type === "roster") {
+      roster = b.batters;
+      rosterEl.textContent = "lineup: " + roster.map((x) => `${x.name} #${x.number} (${x.bats[0].toUpperCase()})`).join(", ");
+    } else if (b.type === "batter") {
+      if (current && b.id !== current.id) {
+        // The previous batter's result arrives from the front end; show the change of batter.
+        const row = document.createElement("tr");
+        cell(row, batterName(current.id));
+        cell(row, "done");
+        results.prepend(row);
+      }
+      current = b;
+      batterEl.textContent = `up: ${batterName(b.id)} | goal: ${b.goal}`;
+    } else if (b.type === "verdict" && pending) {
+      pending.children[4].textContent = b.met ? "met" : "missed";
+    } else if (b.type === "swing" && pending) {
+      pending.children[5].textContent = b.swing;
+      pending.children[6].textContent = b.record
+        ? `${b.record.exit_velocity.toFixed(0)} mph, ${b.record.launch_angle.toFixed(0)}°, ${b.record.hit.carry.toFixed(0)} ft`
+        : "";
+    }
+  },
+  error(m) { statusEl.textContent = m.request ? `${m.request}: ${m.message}` : m.message; },
+}, ["challenges"]);
+</script>
+</body>
+</html>
