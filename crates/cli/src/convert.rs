@@ -10,7 +10,7 @@ pub fn to_stored(frame: device::Frame) -> tracker::StoredFrame {
     }
 }
 
-pub fn config_summary(cfg: &tracker::SessionConfig) -> serde_json::Value {
+pub fn config_summary(cfg: &tracker::Config) -> serde_json::Value {
     serde_json::to_value(cfg).unwrap_or_default()
 }
 

@@ -1,4 +1,4 @@
-//! Session settings. Distances are feet, speeds mph, angles degrees, times
+//! DataDir settings. Distances are feet, speeds mph, angles degrees, times
 //! seconds, exposure microseconds.
 
 use std::fs;
@@ -102,6 +102,32 @@ impl Default for PitchingConfig {
     }
 }
 
+/// The strike zone, in inches: centred on the plate, `width` across, from
+/// `bottom` to `top` above the ground. A pitch is judged on its simulated
+/// crossing.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ZoneConfig {
+    pub width: f64,
+    pub bottom: f64,
+    pub top: f64,
+}
+
+impl Default for ZoneConfig {
+    fn default() -> Self {
+        Self {
+            width: 17.0,
+            bottom: 18.0,
+            top: 42.0,
+        }
+    }
+}
+
+impl ZoneConfig {
+    pub fn contains(&self, side: f64, height: f64) -> bool {
+        side.abs() <= self.width / 2.0 && height >= self.bottom && height <= self.top
+    }
+}
+
 /// Conditions for the predicted flight of a hit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightConfig {
@@ -115,7 +141,7 @@ impl Default for FlightConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SessionConfig {
+pub struct Config {
     pub capture: CaptureConfig,
     pub mount: MountConfig,
     #[serde(default)]
@@ -128,9 +154,11 @@ pub struct SessionConfig {
     pub pitching: PitchingConfig,
     #[serde(default)]
     pub flight: FlightConfig,
+    #[serde(default)]
+    pub zone: ZoneConfig,
 }
 
-impl SessionConfig {
+impl Config {
     pub fn example() -> Self {
         Self {
             capture: CaptureConfig {
@@ -154,6 +182,7 @@ impl SessionConfig {
             watch: WatchConfig::default(),
             pitching: PitchingConfig::default(),
             flight: FlightConfig::default(),
+            zone: ZoneConfig::default(),
         }
     }
 

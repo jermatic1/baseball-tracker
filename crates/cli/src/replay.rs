@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use device::{Camera, Frame, Intrinsics};
-use tracker::{Clip, Session};
+use tracker::{Clip, DataDir};
 
 pub struct ClipCamera {
     clips: Vec<Clip>,
@@ -22,7 +22,7 @@ pub struct ClipCamera {
 }
 
 impl ClipCamera {
-    pub fn open(source: &Session, gap: Duration) -> Result<Self, String> {
+    pub fn open(source: &DataDir, gap: Duration) -> Result<Self, String> {
         let mut clips = Vec::new();
         for id in source.clip_ids().map_err(|e| e.to_string())? {
             if let Ok(clip) = source.load_clip(&id) {

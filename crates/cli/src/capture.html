@@ -48,9 +48,20 @@ th { color: #aaa; font-weight: normal; }
   <button id="cancel" hidden>Cancel</button>
 </div>
 <p>Calibrate with the plate clear and no ball on it. Detected plate in green, fitted pose in yellow. Capture pauses while calibrating.</p>
+<div class="row">
+  <select id="user"></select>
+  <input id="new-user" placeholder="new user" size="12">
+  <button id="add-user">Add user</button>
+  <select id="activity"><option>hitting</option><option>pitching</option></select>
+  <select id="mode"><option>practice</option><option>game</option></select>
+  <button id="start">Start session</button>
+  <button id="end" hidden>End session</button>
+</div>
+<div id="session" class="mono">no session</div>
+<div id="summary" class="mono"></div>
 <div id="status"></div>
 <table id="events">
-  <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>carry ft</th><th>pitch</th><th>plate mph</th><th>location</th><th>simulated</th><th>contact</th><th>samples</th></tr></thead>
+  <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>carry ft</th><th>pitch</th><th>plate mph</th><th>location</th><th>simulated</th><th>call</th><th>contact</th><th>samples</th></tr></thead>
   <tbody></tbody>
 </table>
 <script>
@@ -60,6 +71,11 @@ const cameraEl = document.getElementById("camera");
 const detectorEl = document.getElementById("detector");
 const calibEl = document.getElementById("calibration");
 const events = document.querySelector("#events tbody");
+const userEl = document.getElementById("user");
+const sessionEl = document.getElementById("session");
+const summaryEl = document.getElementById("summary");
+let users = [];
+let session = null;
 let ws = null;
 let url = null;
 let controls = { exposure: 600, gain: 1600, ir_flood: 0, ir_dot: 0 };
@@ -122,7 +138,8 @@ function handle(m) {
     [m.clip, r.kind, r.hit_type || "-", num(r.exit_velocity, 1), num(r.launch_angle, 1),
      num(r.spray_angle, 1), r.hit ? r.hit.carry.toFixed(0) : "-", num(r.pitch_velocity, 1),
      r.pitch ? r.pitch.plate_velocity.toFixed(1) : "-", loc(r.pitch && r.pitch.location),
-     loc(r.pitch && r.pitch.simulated_location), r.contact ? r.contact.kind : "-", r.samples]
+     loc(r.pitch && r.pitch.simulated_location), r.pitch ? r.pitch.call : "-",
+     r.contact ? r.contact.kind : "-", r.samples]
       .forEach((v) => { const td = document.createElement("td"); td.textContent = v; row.appendChild(td); });
     events.prepend(row);
     while (events.children.length > 20) events.lastChild.remove();
@@ -135,8 +152,28 @@ function handle(m) {
       calibEl.textContent = `${m.applied ? "applied" : "calibrating"}: rms ${m.rms.toFixed(2)} px, ` +
         `${p.distance.toFixed(1)} ft from plate, ${p.height.toFixed(1)} ft high, lateral ${p.lateral.toFixed(1)} ft, yaw ${p.yaw.toFixed(1)}, pitch ${p.pitch.toFixed(1)}`;
     }
+  } else if (m.type === "users") {
+    users = m.users;
+    const chosen = userEl.value;
+    userEl.replaceChildren(...users.map((u) => new Option(u.name, u.id)));
+    if (users.some((u) => u.id === chosen)) userEl.value = chosen;
+  } else if (m.type === "session") {
+    session = m.session;
+    if (session) {
+      const user = users.find((u) => u.id === session.user);
+      sessionEl.textContent = `session ${session.id}: ${user ? user.name : session.user} ${session.activity}, ${session.mode}`;
+      summaryEl.textContent = "";
+    } else {
+      sessionEl.textContent = "no session";
+    }
+    document.getElementById("start").hidden = !!session;
+    document.getElementById("end").hidden = !session;
+  } else if (m.type === "session_summary") {
+    const user = users.find((u) => u.id === m.user);
+    summaryEl.textContent = `session ${m.session} (${user ? user.name : m.user}): ` +
+      m.lines.map((l) => `${l.label} ${l.value}`).join(" | ");
   } else if (m.type === "error") {
-    statusEl.textContent = m.message;
+    statusEl.textContent = m.request ? `${m.request}: ${m.message}` : m.message;
   }
 }
 function fit(canvas) {
@@ -186,6 +223,18 @@ document.getElementById("stop").onclick = () => send({ type: "record", action: "
 document.getElementById("calibrate").onclick = () => send({ type: "calibrate", action: "start" });
 document.getElementById("apply").onclick = () => send({ type: "calibrate", action: "apply" });
 document.getElementById("cancel").onclick = () => send({ type: "calibrate", action: "stop" });
+document.getElementById("add-user").onclick = () => {
+  const input = document.getElementById("new-user");
+  if (input.value.trim()) send({ type: "add_user", name: input.value.trim() });
+  input.value = "";
+};
+document.getElementById("start").onclick = () => send({
+  type: "start_session",
+  user: userEl.value,
+  activity: document.getElementById("activity").value,
+  mode: document.getElementById("mode").value,
+});
+document.getElementById("end").onclick = () => { if (session) send({ type: "end_session", session: session.id }); };
 connect();
 </script>
 </body>

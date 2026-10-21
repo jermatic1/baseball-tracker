@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 
-use crate::config::{MountConfig, SessionConfig};
+use crate::config::{Config, MountConfig};
 use crate::geom::{project, Intrinsics};
 use crate::units::{feet, metres};
 
@@ -157,7 +157,7 @@ pub fn calibrate_from_frame(
     gray: &[u8],
     w: u32,
     h: u32,
-    cfg: &SessionConfig,
+    cfg: &Config,
 ) -> Option<(PlateCorners, PoseFit)> {
     let corners = find_plate(gray, w, h)?;
     let intr = Intrinsics::from_fov(w, h, 80.0, 55.0);
@@ -551,7 +551,7 @@ mod tests {
                 }
             }
         }
-        let cfg = SessionConfig::example();
+        let cfg = Config::example();
         assert!(calibrate_from_frame(&img, 640, 400, &cfg).is_none());
     }
 }

@@ -1,7 +1,8 @@
 version: "3"
 
 vars:
-  SESSION: '{{.SESSION | default "test-1"}}'
+  DATA: '{{.DATA | default "data"}}'
+  FROM: '{{.FROM | default "data"}}'
   GAP: '{{.GAP | default "1"}}'
 
 tasks:
@@ -41,16 +42,16 @@ tasks:
       - ls target/release/libonnxruntime.so*
 
   run:
-    desc: Live session; serves the socket, measures every hit and throw while a client is connected
+    desc: Live tracking; serves the socket, measures every hit and throw while a client is connected
     deps: [onnxruntime]
     cmds:
-      - cargo run -p cli --release --features oak --quiet -- watch sessions/{{.SESSION}}
+      - cargo run -p cli --release --features oak --quiet -- watch {{.DATA}}
 
   replay:
-    desc: Run a recorded session through the live path without the camera; GAP= seconds between clips
+    desc: Replay recorded clips (FROM=data/sessions/3) through the live path without the camera; GAP= seconds between clips
     deps: [onnxruntime]
     cmds:
-      - cargo run -p cli --release --quiet -- watch sessions/{{.SESSION}}-replay --from sessions/{{.SESSION}} --gap {{.GAP}}
+      - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}}
 
   check:
     desc: Format, lint, and test
@@ -60,29 +61,29 @@ tasks:
       - task: test
 
   synth:
-    desc: Write a synthetic session
+    desc: Write a synthetic clip
     cmds:
-      - cargo run -p cli --quiet -- synth sessions/{{.SESSION}}
+      - cargo run -p cli --quiet -- synth {{.DATA}}
 
   capture:
     desc: Live capture server
     cmds:
-      - cargo run -p cli --release --features oak --quiet -- capture sessions/{{.SESSION}}
+      - cargo run -p cli --release --features oak --quiet -- capture {{.DATA}}
 
   calibrate:
     desc: Solve the camera pose from the home plate
     cmds:
-      - cargo run -p cli --release --features oak --quiet -- calibrate sessions/{{.SESSION}}
+      - cargo run -p cli --release --features oak --quiet -- calibrate {{.DATA}}
 
   review:
-    desc: Review a session
+    desc: Review recorded clips and events
     cmds:
-      - cargo run -p cli --quiet -- review sessions/{{.SESSION}}
+      - cargo run -p cli --quiet -- review {{.DATA}}
 
   label:
     desc: Click the ball in saved frames
     cmds:
-      - cargo run -p cli --quiet -- label sessions/{{.SESSION}}
+      - cargo run -p cli --quiet -- label {{.DATA}}
 
   train:
     desc: Fine-tune a ball detector from labels and export ONNX
@@ -94,18 +95,18 @@ tasks:
       - uv pip uninstall --python .venv/bin/python opencv-python
       - uv pip install --python .venv/bin/python opencv-python-headless
       - .venv/bin/python -c "import torch, ultralytics; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
-      - .venv/bin/python tools/train.py sessions/{{.SESSION}}
+      - .venv/bin/python tools/train.py {{.DATA}}
 
   detect:
-    desc: Detect balls in a saved session
+    desc: Detect balls in saved clips
     deps: [onnxruntime]
     cmds:
-      - cargo run -p cli --release --quiet -- detect sessions/{{.SESSION}} --model {{.MODEL | default "models/ball.onnx"}} {{if .CLIP}}--clip {{.CLIP}}{{end}}
+      - cargo run -p cli --release --quiet -- detect {{.DATA}} --model {{.MODEL | default "models/ball.onnx"}} {{if .CLIP}}--clip {{.CLIP}}{{end}}
 
   camera:
     desc: Open the OAK and write one frame
     cmds:
-      - cargo run -p cli --release --features oak --quiet -- capture sessions/{{.SESSION}} --once
+      - cargo run -p cli --release --features oak --quiet -- capture {{.DATA}} --once
 
   release:
     desc: Check, then build the tracker and what it needs to run into dist/release

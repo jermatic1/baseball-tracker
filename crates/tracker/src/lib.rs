@@ -1,26 +1,30 @@
+pub mod clips;
 pub mod config;
 pub mod flight;
 pub mod geom;
 pub mod mot;
 pub mod plate;
 pub mod rectify;
-pub mod session;
+pub mod stats;
 pub mod stereo;
+pub mod store;
 pub mod track;
 pub mod units;
 pub mod watch;
 
+pub use clips::{
+    write_synth, Call, Clip, ClipMeta, ClipWriter, Contact, ContactKind, DataDir, Detections,
+    EventKind, HitFlight, HitRecord, HitType, Landing, Location, PitchPlate, StoredFrame,
+};
 pub use config::{
-    CaptureConfig, FlightConfig, MountConfig, PitchingConfig, SessionConfig, WatchConfig,
+    CaptureConfig, Config, FlightConfig, MountConfig, PitchingConfig, WatchConfig, ZoneConfig,
 };
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use rectify::{Eye, Rectifier};
-pub use session::{
-    write_synth, Clip, ClipMeta, ClipWriter, Contact, ContactKind, Detections, EventKind,
-    HitFlight, HitRecord, HitType, Landing, Location, PitchPlate, Session, StoredFrame,
-};
+pub use stats::{summary_lines, SummaryLine};
 pub use stereo::{stereo_calib_from_device, StereoCalib};
+pub use store::{Activity, Mode, Session, Store, User};
 pub use track::{
     ball_at, motion_segments, select_events, track_balls, tracker_config, Anchor, AnchorKind,
     BallBox, DetFrame, Event, MotionParams, Segment, SplitKind,
@@ -41,6 +45,8 @@ pub enum TrackerError {
     TomlDe(#[from] toml::de::Error),
     #[error("{0}")]
     TomlSer(#[from] toml::ser::Error),
+    #[error("store: {0}")]
+    Store(#[from] rusqlite::Error),
     #[error("{0}")]
     Other(String),
 }
@@ -49,7 +55,7 @@ pub enum TrackerError {
 pub fn process_clip(
     clip_id: &str,
     frames: &[DetFrame],
-    cfg: &SessionConfig,
+    cfg: &Config,
     intr: &Intrinsics,
 ) -> Vec<HitRecord> {
     let params = MotionParams::default();
@@ -121,7 +127,7 @@ pub fn process_clip(
             flight::predict(traj.p0, traj.v, air)
         });
         let pitch = (kind == EventKind::Pitch)
-            .then(|| pitch_plate(&traj, &cfg.pitching))
+            .then(|| pitch_plate(&traj, &cfg.pitching, &cfg.zone))
             .flatten();
         out.push(HitRecord {
             clip: clip_id.to_string(),
@@ -175,7 +181,7 @@ const MIN_APPROACH_MPS: f64 = 1.0;
 
 /// Where the fitted flight crosses the front of the plate, and where it would
 /// have crossed had the same throw started the simulated distance away.
-fn pitch_plate(traj: &Trajectory, cfg: &PitchingConfig) -> Option<PitchPlate> {
+fn pitch_plate(traj: &Trajectory, cfg: &PitchingConfig, zone: &ZoneConfig) -> Option<PitchPlate> {
     let vz = traj.v[2];
     if vz < MIN_APPROACH_MPS {
         return None;
@@ -188,16 +194,24 @@ fn pitch_plate(traj: &Trajectory, cfg: &PitchingConfig) -> Option<PitchPlate> {
     let extra = metres(cfg.simulated_distance - cfg.actual_distance);
     let [sx, sy, _] = traj.at_s(t + extra / vz);
     let [vx, vy, vz] = traj.velocity_s(t);
+    let simulated_location = Location {
+        side: inches(sx),
+        height: inches(sy),
+    };
+    let call = if zone.contains(simulated_location.side, simulated_location.height) {
+        Call::Strike
+    } else {
+        Call::Ball
+    };
     Some(PitchPlate {
         plate_velocity: mph((vx * vx + vy * vy + vz * vz).sqrt()),
         location: Location {
             side: inches(x),
             height: inches(y),
         },
-        simulated_location: Location {
-            side: inches(sx),
-            height: inches(sy),
-        },
+        simulated_location,
+        call,
+        zone: *zone,
     })
 }
 
@@ -227,7 +241,7 @@ fn fit_free_flight(samples: &[Sample]) -> Option<(Trajectory, usize)> {
     Some((traj, n))
 }
 
-fn sample(t_ns: u64, u: f64, v: f64, depth: f64, intr: &Intrinsics, cfg: &SessionConfig) -> Sample {
+fn sample(t_ns: u64, u: f64, v: f64, depth: f64, intr: &Intrinsics, cfg: &Config) -> Sample {
     let p = unproject(u, v, depth, intr, &cfg.mount);
     Sample {
         t_ns,
@@ -253,7 +267,7 @@ fn smooth_depths(depths: &[Option<f64>], fallback: f64) -> Vec<f64> {
 }
 
 /// The events of one clip from its saved detections.
-pub fn clip_hits(session: &Session, id: &str) -> Result<Vec<HitRecord>, TrackerError> {
+pub fn clip_hits(session: &DataDir, id: &str) -> Result<Vec<HitRecord>, TrackerError> {
     let dets = session.load_detections(id)?;
     let clip = session.load_clip(id)?;
     let intr = Intrinsics::from_fov(clip.meta.width, clip.meta.height, 80.0, 55.0);
@@ -272,7 +286,7 @@ pub fn merge_clip_hits(
     out
 }
 
-pub fn recompute_hits(session: &Session) -> Result<Vec<HitRecord>, TrackerError> {
+pub fn recompute_hits(session: &DataDir) -> Result<Vec<HitRecord>, TrackerError> {
     let prev = session.hits()?;
     let mut out = Vec::new();
     for id in session.clip_ids()? {
@@ -333,7 +347,7 @@ mod tests {
     /// Synthetic detections at 640x400 and 100 fps from field-space motion.
     struct Synth {
         intr: Intrinsics,
-        cfg: SessionConfig,
+        cfg: Config,
         frames: Vec<DetFrame>,
     }
 
@@ -349,7 +363,7 @@ mod tests {
                 })
                 .collect();
             // A fixed generic placement so the scenes don't follow the rig config.
-            let mut cfg = SessionConfig::example();
+            let mut cfg = Config::example();
             cfg.mount = MountConfig {
                 distance: feet(2.1),
                 height: feet(0.8),
@@ -631,7 +645,7 @@ mod tests {
 
     #[test]
     fn unproject_project_roundtrip() {
-        let cfg = SessionConfig::example();
+        let cfg = Config::example();
         let intr = Intrinsics::from_fov(1280, 800, 80.0, 55.0);
         let p = [0.12, 1.05, -0.4];
         let (u, v, z) = project(p, &intr, &cfg.mount).unwrap();
@@ -644,7 +658,7 @@ mod tests {
     #[test]
     fn session_save_load_roundtrip() {
         let dir = temp_dir();
-        let session = Session::create(&dir).unwrap();
+        let session = DataDir::create(&dir).unwrap();
         assert_eq!(session.config.capture.width, 640);
         let w = 8u32;
         let h = 4u32;
@@ -714,7 +728,7 @@ mod tests {
             pitch: None,
         }];
         session.write_hits(&hits).unwrap();
-        let opened = Session::open(&dir).unwrap();
+        let opened = DataDir::open(&dir).unwrap();
         let h2 = opened.hits().unwrap();
         assert_eq!(h2[0].clip, id);
         std::fs::remove_dir_all(&dir).ok();
@@ -739,7 +753,7 @@ mod tests {
             "spray {}",
             est.spray_angle
         );
-        let session = Session::open(&dir).unwrap();
+        let session = DataDir::open(&dir).unwrap();
         let hits = recompute_hits(&session).unwrap();
         assert_eq!(hits.len(), 1);
         assert!((hits[0].exit_velocity - 65.0).abs() < 1.0);
@@ -843,18 +857,51 @@ mod tests {
             actual_distance: 30.0,
             simulated_distance: 46.0,
         };
-        let p = pitch_plate(&traj, &cfg).expect("crosses the plate");
+        let zone = ZoneConfig::default();
+        let p = pitch_plate(&traj, &cfg, &zone).expect("crosses the plate");
         assert!(p.location.height > 0.0);
         assert!(p.simulated_location.height < p.location.height - 12.0);
         assert!((p.location.side - inches(0.1)).abs() < 1e-9);
         assert!((p.plate_velocity - mph(20.0)).abs() < 1.0);
-        let same = pitch_plate(&traj, &PitchingConfig::default()).unwrap();
+        let same = pitch_plate(&traj, &PitchingConfig::default(), &zone).unwrap();
         assert_eq!(same.location, same.simulated_location);
         let away = Trajectory {
             v: [0.0, 0.5, -20.0],
             ..traj
         };
-        assert!(pitch_plate(&away, &cfg).is_none());
+        assert!(pitch_plate(&away, &cfg, &zone).is_none());
+    }
+
+    #[test]
+    fn pitches_are_called_on_the_simulated_crossing() {
+        let zone = ZoneConfig::default();
+        let cfg = PitchingConfig::default();
+        let middle = Trajectory {
+            t0_ns: 0,
+            p0: [0.0, 1.2, -8.0],
+            v: [0.0, 0.5, 20.0],
+        };
+        let p = pitch_plate(&middle, &cfg, &zone).unwrap();
+        assert_eq!(p.call, Call::Strike);
+        assert_eq!(p.zone, zone);
+        let wide = Trajectory {
+            p0: [0.3, 0.9, -8.0],
+            ..middle
+        };
+        assert_eq!(pitch_plate(&wide, &cfg, &zone).unwrap().call, Call::Ball);
+        // Thrown from closer, the same ball drops below the zone by the mound.
+        let close = PitchingConfig {
+            actual_distance: 30.0,
+            simulated_distance: 46.0,
+        };
+        let low = Trajectory {
+            p0: [0.0, 0.95, -8.0],
+            v: [0.0, 2.0, 20.0],
+            ..middle
+        };
+        let p = pitch_plate(&low, &close, &zone).unwrap();
+        assert!(zone.contains(p.location.side, p.location.height));
+        assert_eq!(p.call, Call::Ball);
     }
 
     #[test]

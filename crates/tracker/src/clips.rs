@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::SessionConfig;
+use crate::config::{Config, ZoneConfig};
 use crate::stereo::{self, StereoCalib};
 use crate::track::{BallBox, DetFrame};
 use crate::TrackerError;
@@ -128,13 +128,23 @@ pub struct Landing {
     pub z: f64,
 }
 
-/// A pitch at the front of the plate, and where the same throw would have
-/// crossed from the simulated pitching distance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Call {
+    Ball,
+    Strike,
+}
+
+/// A pitch at the front of the plate, where the same throw would have
+/// crossed from the simulated pitching distance, and the call on that
+/// simulated crossing against the zone it was judged by.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PitchPlate {
     pub plate_velocity: f64,
     pub location: Location,
     pub simulated_location: Location,
+    pub call: Call,
+    pub zone: ZoneConfig,
 }
 
 /// Inches from the centre of the plate, positive toward first base, and
@@ -245,9 +255,9 @@ impl Clip {
 }
 
 #[derive(Debug, Clone)]
-pub struct Session {
+pub struct DataDir {
     pub dir: PathBuf,
-    pub config: SessionConfig,
+    pub config: Config,
 }
 
 pub struct ClipWriter {
@@ -382,20 +392,20 @@ fn write_depth(out: &mut impl Write, values: &[u16]) -> Result<(), TrackerError>
     Ok(())
 }
 
-impl Session {
+impl DataDir {
     pub fn create(dir: impl AsRef<Path>) -> Result<Self, TrackerError> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)?;
         let cfg_path = dir.join("config.toml");
         if !cfg_path.exists() {
-            SessionConfig::example().save(&cfg_path)?;
+            Config::example().save(&cfg_path)?;
         }
         Self::open(dir)
     }
 
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, TrackerError> {
         let dir = dir.as_ref().to_path_buf();
-        let config = SessionConfig::load(dir.join("config.toml"))?;
+        let config = Config::load(dir.join("config.toml"))?;
         Ok(Self { dir, config })
     }
 
@@ -599,7 +609,7 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
     use crate::geom::{field_point, launch_velocity, project, Intrinsics};
     use crate::{process_clip, HitEstimate};
 
-    let mut session = Session::create(dir)?;
+    let mut session = DataDir::create(dir)?;
     session.config.capture.width = 640;
     session.config.capture.height = 400;
     session.config.capture.fps = 60.0;

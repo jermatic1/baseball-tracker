@@ -57,19 +57,19 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ## Usage
 
-Everything for one camera setup lives in a session directory under `sessions/`.
+Everything lives in a data directory, `data` by default: the config, the calibration, the database of users, sessions, and events, and the recorded clips.
 
-1. **Run.** `task run SESSION=cage-1`, or `./tracker watch sessions/cage-1` with the prebuilt executable, serves the camera page on port 7880.
+1. **Run.** `task run`, or `./tracker watch data` with the prebuilt executable, serves the page on port 7880.
 2. **Calibrate, once per camera placement.** With the plate clear, click Calibrate on the page.
-3. **Train the detector, once.** `task label SESSION=cage-1` serves a page on port 7881 for clicking the ball in recorded frames, and `task train SESSION=cage-1` writes `models/ball.onnx`, which loads on start.
-4. **Hit.** While a page or simulator is connected, every moving ball is measured, sent to the connected simulators, and saved as a clip. A ball resting on the tee is ignored.
-5. **Review.** `task review SESSION=cage-1` serves a page on port 7879 that plays each clip with detections drawn and lists its events.
+3. **Train the detector, once.** `task label` serves a page on port 7881 for clicking the ball in recorded frames, and `task train` writes `models/ball.onnx`, which loads on start.
+4. **Hit.** Add a user on the page and start a session. Every moving ball is measured, sent to the connected simulators, and saved as a clip. A ball resting on the tee is ignored.
+5. **Review.** `task review DATA=data/sessions/3` serves a page on port 7879 that plays each clip of a session with detections drawn and lists its events.
 
-`task replay SESSION=cage-1` plays a recorded session back through the live path without a camera.
+`task replay FROM=data/sessions/3` plays a session back through the live path without a camera.
 
 ## Configuration
 
-`config.toml` in the session directory. `config.example.toml` documents every setting.
+`config.toml` in the data directory. `config.example.toml` documents every setting.
 
 ## Simulators
 

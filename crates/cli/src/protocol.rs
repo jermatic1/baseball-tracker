@@ -3,14 +3,19 @@
 //! exposure in microseconds.
 
 use serde::{Deserialize, Serialize};
-use tracker::{HitRecord, MountConfig};
+use tracker::{Activity, HitRecord, Mode, MountConfig, Session, SummaryLine, User};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    /// Must be the first message; names the client.
+    /// Must be the first message; names the client and the game modules it
+    /// plays.
     Hello {
         client: String,
+        #[serde(default)]
+        sessions: Option<u32>,
+        #[serde(default)]
+        games: Vec<String>,
     },
     /// Subscribe to or drop preview frames.
     Preview {
@@ -34,6 +39,39 @@ pub enum ClientMsg {
     Calibrate {
         action: CalibrateAction,
     },
+    /// A new user, from the tracker's own page.
+    AddUser {
+        name: String,
+    },
+    /// Ends the active session first, if there is one.
+    StartSession {
+        user: String,
+        activity: Activity,
+        mode: Mode,
+    },
+    EndSession {
+        session: String,
+    },
+    /// A type this tracker does not know; ignored so clients can grow.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ClientMsg {
+    /// The wire name, for `error.request`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ClientMsg::Hello { .. } => "hello",
+            ClientMsg::Preview { .. } => "preview",
+            ClientMsg::Set { .. } => "set",
+            ClientMsg::Record { .. } => "record",
+            ClientMsg::Calibrate { .. } => "calibrate",
+            ClientMsg::AddUser { .. } => "add_user",
+            ClientMsg::StartSession { .. } => "start_session",
+            ClientMsg::EndSession { .. } => "end_session",
+            ClientMsg::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,9 +107,59 @@ pub enum ServerMsg {
         mount: Option<MountConfig>,
         applied: bool,
     },
+    /// Everyone being tracked; sent after hello and whenever it changes.
+    Users {
+        users: Vec<UserInfo>,
+    },
+    /// The whole current session state; sent after hello and on every change.
+    Session {
+        session: Option<SessionInfo>,
+    },
+    /// Display-ready lines for a session that just ended, resent after hello.
+    SessionSummary {
+        session: String,
+        user: String,
+        lines: Vec<SummaryLine>,
+    },
     Error {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<String>,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserInfo {
+    pub id: String,
+    pub name: String,
+}
+
+impl From<&User> for UserInfo {
+    fn from(u: &User) -> Self {
+        Self {
+            id: u.id.to_string(),
+            name: u.name.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub user: String,
+    pub activity: Activity,
+    pub mode: Mode,
+}
+
+impl From<&Session> for SessionInfo {
+    fn from(s: &Session) -> Self {
+        Self {
+            id: s.id.to_string(),
+            user: s.user.to_string(),
+            activity: s.activity,
+            mode: s.mode,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -141,6 +229,17 @@ mod tests {
     fn client_messages_round_trip() {
         roundtrip(ClientMsg::Hello {
             client: "page".into(),
+            sessions: Some(1),
+            games: vec!["challenges".into()],
+        });
+        roundtrip(ClientMsg::AddUser { name: "Sam".into() });
+        roundtrip(ClientMsg::StartSession {
+            user: "1".into(),
+            activity: Activity::Pitching,
+            mode: Mode::Game,
+        });
+        roundtrip(ClientMsg::EndSession {
+            session: "42".into(),
         });
         roundtrip(ClientMsg::Preview { enabled: true });
         roundtrip(ClientMsg::Set {
@@ -163,9 +262,24 @@ mod tests {
         assert_eq!(
             hello,
             ClientMsg::Hello {
-                client: "sim".into()
+                client: "sim".into(),
+                sessions: None,
+                games: Vec::new(),
             }
         );
+        let start: ClientMsg = serde_json::from_str(
+            r#"{"type":"start_session","user":"u1","activity":"hitting","mode":"practice"}"#,
+        )
+        .unwrap();
+        assert_eq!(start.name(), "start_session");
+        assert!(matches!(
+            start,
+            ClientMsg::StartSession {
+                activity: Activity::Hitting,
+                mode: Mode::Practice,
+                ..
+            }
+        ));
         let set: ClientMsg = serde_json::from_str(r#"{"type":"set","gain":1200}"#).unwrap();
         assert!(matches!(
             set,
@@ -175,12 +289,27 @@ mod tests {
                 ..
             }
         ));
-        assert!(serde_json::from_str::<ClientMsg>(r#"{"type":"fly"}"#).is_err());
+        let unknown: ClientMsg = serde_json::from_str(r#"{"type":"fly","wings":2}"#).unwrap();
+        assert_eq!(unknown, ClientMsg::Unknown);
+    }
+
+    #[test]
+    fn names_match_wire_tags() {
+        let msgs = [
+            ClientMsg::Preview { enabled: true },
+            ClientMsg::AddUser { name: "x".into() },
+            ClientMsg::EndSession {
+                session: "1".into(),
+            },
+        ];
+        for m in msgs {
+            assert_eq!(serde_json::to_value(&m).unwrap()["type"], m.name());
+        }
     }
 
     #[test]
     fn server_messages_round_trip() {
-        let mount = tracker::SessionConfig::example().mount;
+        let mount = tracker::Config::example().mount;
         roundtrip(ServerMsg::Status(Status {
             camera: Some(CameraStats {
                 left_rate: 100.0,
@@ -211,12 +340,41 @@ mod tests {
             applied: false,
         });
         roundtrip(ServerMsg::Error {
+            request: Some("start_session".into()),
             message: "no".into(),
         });
-        let status = serde_json::to_value(ServerMsg::Error {
+        roundtrip(ServerMsg::Users {
+            users: vec![UserInfo {
+                id: "1".into(),
+                name: "Sam".into(),
+            }],
+        });
+        roundtrip(ServerMsg::Session { session: None });
+        roundtrip(ServerMsg::SessionSummary {
+            session: "42".into(),
+            user: "1".into(),
+            lines: vec![SummaryLine {
+                label: "PITCHES".into(),
+                value: "48".into(),
+            }],
+        });
+        let error = serde_json::to_value(ServerMsg::Error {
+            request: None,
             message: "x".into(),
         })
         .unwrap();
-        assert_eq!(status["type"], "error");
+        assert_eq!(error["type"], "error");
+        assert!(error.get("request").is_none());
+        let session = serde_json::to_value(ServerMsg::Session {
+            session: Some(SessionInfo {
+                id: "42".into(),
+                user: "1".into(),
+                activity: Activity::Pitching,
+                mode: Mode::Game,
+            }),
+        })
+        .unwrap();
+        assert_eq!(session["session"]["activity"], "pitching");
+        assert_eq!(session["session"]["mode"], "game");
     }
 }

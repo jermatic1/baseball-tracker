@@ -1,7 +1,8 @@
-//! A live session: the capture server plus a detector that sees every
-//! frame, a watcher that cuts the windows where a ball moved, and a
-//! coordinator that measures each window, broadcasts its events, and saves
-//! it as a clip. Detection runs only while a client is connected.
+//! Live tracking: the capture server plus a detector that sees every frame,
+//! a watcher that cuts the windows where a ball moved, and a coordinator
+//! that measures each window, broadcasts its events, records them under the
+//! active session, and saves it as a clip. Detection runs only while a
+//! client is connected.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracker::{
-    merge_clip_hits, process_clip, ClipMeta, ClipWriter, Detections, Episode, Intrinsics, Session,
+    merge_clip_hits, process_clip, ClipMeta, ClipWriter, DataDir, Detections, Episode, Intrinsics,
     StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
 };
 
@@ -26,7 +27,11 @@ use crate::protocol::{LiveStatus, ServerMsg};
 /// three seconds.
 const QUEUE: usize = 300;
 
+/// A finished window: where its clip was written and the session it
+/// belongs to, fixed when the window opened.
 struct Finished {
+    dir: DataDir,
+    session: Option<i64>,
     id: String,
     episode: Episode,
 }
@@ -45,9 +50,9 @@ pub async fn watch(
     from: Option<PathBuf>,
     gap: f64,
 ) -> Result<(), String> {
-    let session = Session::create(&path).map_err(|e| e.to_string())?;
+    let session = DataDir::create(&path).map_err(|e| e.to_string())?;
     let detector = Detector::load(&model)?;
-    let hub = Hub::new(session.config.clone());
+    let hub = Hub::open(session.clone())?;
     let status = Arc::new(Mutex::new(LiveStatus {
         provider: detector.provider().to_string(),
         state: "idle".into(),
@@ -72,14 +77,13 @@ pub async fn watch(
     let c = session.config.capture.clone();
     let coordinator = tokio::spawn(coordinate(
         done_rx,
-        session.clone(),
         Arc::clone(&hub),
         Arc::clone(&status),
         Intrinsics::from_fov(c.width, c.height, 80.0, 55.0),
     ));
     let worker = match from {
         Some(source) => {
-            let source = Session::open(&source).map_err(|e| e.to_string())?;
+            let source = DataDir::open(&source).map_err(|e| e.to_string())?;
             let calibration = source.dir.join("calibration.json");
             if calibration.exists() && !session.dir.join("calibration.json").exists() {
                 std::fs::copy(&calibration, session.dir.join("calibration.json"))
@@ -129,7 +133,7 @@ pub async fn watch(
 fn spawn_detector(
     rx: Receiver<Arc<StoredFrame>>,
     detector: Detector,
-    session: &Session,
+    session: &DataDir,
     calib: StereoCalib,
     shared: Shared,
     done: UnboundedSender<Finished>,
@@ -148,7 +152,7 @@ fn spawn_detector(
 fn detect_loop(
     rx: Receiver<Arc<StoredFrame>>,
     mut detector: Detector,
-    session: Session,
+    session: DataDir,
     calib: StereoCalib,
     shared: Shared,
     done: UnboundedSender<Finished>,
@@ -166,6 +170,7 @@ fn detect_loop(
     let mut ring: VecDeque<(usize, Arc<StoredFrame>)> = VecDeque::new();
     let preroll_ns = (cfg.preroll * 1e9) as u64;
     let mut writer: Option<ClipWriter> = None;
+    let mut target: Option<(DataDir, Option<i64>)> = None;
     let mut index = 0usize;
     let mut taken = 0u64;
     let mut meter = (Instant::now(), 0u32);
@@ -200,7 +205,8 @@ fn detect_loop(
         }
         if !hub.capturing() {
             if let Some(episode) = gate_closed(&mut watcher) {
-                finish_episode(&session, writer.take(), episode, &c, &done);
+                let target = target.take().unwrap_or_else(|| hub.target());
+                finish_episode(target, writer.take(), episode, &c, &done);
             }
             ring.clear();
             index += 1;
@@ -236,6 +242,9 @@ fn detect_loop(
         let boxes: Vec<[f64; 4]> = balls.iter().map(|b| [b.x, b.y, b.w, b.h]).collect();
         let was_open = watcher.state() == WatchState::Episode;
         let episode = watcher.observe(index, frame.t_ns, balls);
+        if !was_open && watcher.state() == WatchState::Episode {
+            target = Some(hub.target());
+        }
         ring.push_back((index, Arc::clone(&frame)));
         let cutoff = frame.t_ns.saturating_sub(preroll_ns);
         while ring.front().is_some_and(|(_, f)| f.t_ns < cutoff) {
@@ -244,10 +253,12 @@ fn detect_loop(
         if cfg.keep_clips {
             let result = if was_open {
                 writer.as_mut().map_or(Ok(()), |w| w.write(&frame))
-            } else if watcher.state() == WatchState::Episode {
+            } else if let Some((dir, _)) = target
+                .as_ref()
+                .filter(|_| watcher.state() == WatchState::Episode)
+            {
                 let start = watcher.window_start().unwrap_or(index);
-                session
-                    .begin_clip(c.exposure, c.gain, 0.0, 0.0, calib)
+                dir.begin_clip(c.exposure, c.gain, 0.0, 0.0, calib)
                     .and_then(|w| {
                         let mut w = w.without_depth();
                         for (_, f) in ring.iter().filter(|(i, _)| *i >= start) {
@@ -265,14 +276,16 @@ fn detect_loop(
             }
         }
         if let Some(episode) = episode {
-            finish_episode(&session, writer.take(), episode, &c, &done);
+            let target = target.take().unwrap_or_else(|| hub.target());
+            finish_episode(target, writer.take(), episode, &c, &done);
         }
         index += 1;
         meter.1 += 1;
         report(&watcher, boxes, taken, &mut meter);
     }
     if let Some(episode) = watcher.flush() {
-        finish_episode(&session, writer.take(), episode, &c, &done);
+        let target = target.take().unwrap_or_else(|| hub.target());
+        finish_episode(target, writer.take(), episode, &c, &done);
     }
     Ok(())
 }
@@ -286,7 +299,7 @@ fn gate_closed(watcher: &mut Watcher) -> Option<Episode> {
 
 /// Close the clip for a finished window and hand it to the coordinator.
 fn finish_episode(
-    session: &Session,
+    (dir, session): (DataDir, Option<i64>),
     writer: Option<ClipWriter>,
     episode: Episode,
     c: &tracker::CaptureConfig,
@@ -294,7 +307,7 @@ fn finish_episode(
 ) {
     let id = match writer {
         Some(w) => w.finish(),
-        None => session.next_clip_id().and_then(|id| {
+        None => dir.next_clip_id().and_then(|id| {
             let meta = ClipMeta {
                 width: c.width,
                 height: c.height,
@@ -306,36 +319,46 @@ fn finish_episode(
                 ir_flood: 0.0,
                 ir_dot: 0.0,
             };
-            session.write_clip_meta(&id, &meta)?;
+            dir.write_clip_meta(&id, &meta)?;
             Ok(id)
         }),
     };
     match id {
         Ok(id) => {
-            let _ = done.send(Finished { id, episode });
+            let _ = done.send(Finished {
+                dir,
+                session,
+                id,
+                episode,
+            });
         }
         Err(e) => eprintln!("episode lost: {e}"),
     }
 }
 
-/// Measure each finished window, record its events, and broadcast them.
+/// Measure each finished window, record its events under its session, and
+/// broadcast them. Events with no session are broadcast but not recorded.
 async fn coordinate(
     mut rx: UnboundedReceiver<Finished>,
-    session: Session,
     hub: Arc<Hub>,
     status: Arc<Mutex<LiveStatus>>,
     intr: Intrinsics,
 ) -> Result<(), String> {
-    while let Some(Finished { id, episode }) = rx.recv().await {
+    while let Some(Finished {
+        dir,
+        session,
+        id,
+        episode,
+    }) = rx.recv().await
+    {
         let frames = episode.as_clip();
-        session
-            .save_detections(
-                &id,
-                &Detections {
-                    frames: frames.clone(),
-                },
-            )
-            .map_err(|e| e.to_string())?;
+        dir.save_detections(
+            &id,
+            &Detections {
+                frames: frames.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
         let cfg = hub.config();
         let records = process_clip(&id, &frames, &cfg, &intr);
         let summary = if records.is_empty() {
@@ -358,9 +381,14 @@ async fn coordinate(
         for r in &records {
             print_hit(r);
         }
-        let existing = session.hits().map_err(|e| e.to_string())?;
+        let existing = dir.hits().map_err(|e| e.to_string())?;
         let hits = merge_clip_hits(existing, &id, records.clone());
-        session.write_hits(&hits).map_err(|e| e.to_string())?;
+        dir.write_hits(&hits).map_err(|e| e.to_string())?;
+        if let Some(session) = session {
+            for record in &records {
+                hub.record_event(session, record)?;
+            }
+        }
         for record in records {
             hub.send(&ServerMsg::Event {
                 clip: id.clone(),

@@ -49,3 +49,10 @@ simulated_distance = 46
 [flight]
 # Thinner air carries farther.
 altitude = 0
+
+# The strike zone, inches: centred on the plate, width across, bottom to top
+# above the ground. Pitches are called on their simulated crossing.
+[zone]
+width = 17
+bottom = 18
+top = 42
