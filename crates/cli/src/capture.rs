@@ -269,6 +269,8 @@ pub(crate) mod server {
                 "/page.css",
                 get(|| page("text/css", include_str!("page.css"))),
             )
+            .route("/games", get(games))
+            .route("/games/{name}", get(game_page))
             .route("/ws", get(ws))
             .with_state(app);
         let addr: SocketAddr = BIND
@@ -390,6 +392,21 @@ pub(crate) mod server {
         ([(axum::http::header::CONTENT_TYPE, content_type)], body).into_response()
     }
 
+    /// The registered game modules, for the pages' navigation.
+    async fn games(State(app): State<App>) -> axum::Json<Vec<String>> {
+        axum::Json(app.hub.game_names())
+    }
+
+    async fn game_page(
+        axum::extract::Path(name): axum::extract::Path<String>,
+        State(app): State<App>,
+    ) -> Response {
+        match app.hub.game_page(&name) {
+            Some(html) => page("text/html", html).await,
+            None => (axum::http::StatusCode::NOT_FOUND, "no such game").into_response(),
+        }
+    }
+
     async fn ws(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
         ws.on_upgrade(move |socket| handle_socket(socket, app))
     }
@@ -398,11 +415,11 @@ pub(crate) mod server {
     /// come in while the hub's broadcast and this client's errors go out.
     async fn handle_socket(socket: WebSocket, app: App) {
         let (mut sink, mut stream) = socket.split();
-        let id = loop {
+        let (id, games) = loop {
             match stream.next().await {
                 Some(Ok(Message::Text(text))) => match serde_json::from_str::<ClientMsg>(&text) {
                     Ok(ClientMsg::Hello { client, games, .. }) => {
-                        break app.hub.join(&client, &games)
+                        break (app.hub.join(&client), games)
                     }
                     _ => {
                         let _ = sink
@@ -418,7 +435,7 @@ pub(crate) mod server {
         let preview = Arc::new(AtomicBool::new(false));
         let (direct_tx, mut direct_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let mut rx = app.hub.tx.subscribe();
-        for msg in app.hub.welcome() {
+        for msg in app.hub.welcome(&games) {
             if let Ok(text) = serde_json::to_string(&msg) {
                 let _ = direct_tx.send(text);
             }
@@ -437,6 +454,16 @@ pub(crate) mod server {
                             if wants_preview.load(Ordering::Relaxed)
                                 && sink
                                     .send(Message::Binary(bytes.as_slice().to_vec().into()))
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(Outbound::Game { game, text }) => {
+                            if games.iter().any(|g| **g == *game)
+                                && sink
+                                    .send(Message::Text(text.to_string().into()))
                                     .await
                                     .is_err()
                             {
@@ -506,6 +533,7 @@ pub(crate) mod server {
                 mode,
             } => app.hub.start_session(&user, activity, mode),
             ClientMsg::EndSession { session } => app.hub.end_session(&session),
+            ClientMsg::Game { game, body } => app.hub.game_message(&game, body),
             ClientMsg::Preview { enabled } => {
                 if preview.swap(enabled, Ordering::Relaxed) != enabled {
                     if enabled {

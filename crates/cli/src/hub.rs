@@ -1,13 +1,14 @@
 //! What the socket clients, the server tasks, and the detector share: the
-//! broadcast channel, who is connected, whether capture is allowed, and the
-//! store with the active session.
+//! broadcast channel, who is connected, whether capture is allowed, the
+//! store with the active session, and the game modules.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+use serde_json::Value;
 use tokio::sync::broadcast;
 use tracker::{
-    summary_lines, Activity, Config, DataDir, HitRecord, Mode, MountConfig, Session, Store,
+    summary_lines, Activity, Config, DataDir, Game, HitRecord, Mode, MountConfig, Session, Store,
 };
 
 use crate::protocol::{ServerMsg, SessionInfo, UserInfo};
@@ -29,13 +30,16 @@ impl Gate {
 pub enum Outbound {
     Text(Arc<str>),
     Preview(Arc<Vec<u8>>),
+    /// A game body, for clients that listed the game in their hello.
+    Game {
+        game: Arc<str>,
+        text: Arc<str>,
+    },
 }
 
 struct Client {
     id: u64,
     name: String,
-    #[allow(dead_code)]
-    games: Vec<String>,
 }
 
 /// The session clips are being filed under, with its directory.
@@ -57,6 +61,7 @@ pub struct Hub {
     root: DataDir,
     store: Mutex<Store>,
     active: RwLock<Option<Active>>,
+    games: Mutex<Vec<Box<dyn Game>>>,
 }
 
 impl Hub {
@@ -92,16 +97,40 @@ impl Hub {
             root,
             store: Mutex::new(store),
             active: RwLock::new(active),
+            games: Mutex::new(Vec::new()),
         }))
     }
 
-    pub fn join(&self, name: &str, games: &[String]) -> u64 {
+    /// Add a game module; the watch command does this for each compiled in.
+    #[cfg_attr(not(feature = "challenges"), allow(dead_code))]
+    pub fn register(&self, game: Box<dyn Game>) {
+        if let Ok(mut games) = self.games.lock() {
+            games.push(game);
+        }
+    }
+
+    pub fn game_names(&self) -> Vec<String> {
+        self.games
+            .lock()
+            .map(|g| g.iter().map(|g| g.name().to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn game_page(&self, name: &str) -> Option<&'static str> {
+        self.games
+            .lock()
+            .ok()?
+            .iter()
+            .find(|g| g.name() == name)
+            .and_then(|g| g.page())
+    }
+
+    pub fn join(&self, name: &str) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut c) = self.clients.lock() {
             c.push(Client {
                 id,
                 name: name.to_string(),
-                games: games.to_vec(),
             });
         }
         self.recompute();
@@ -161,6 +190,21 @@ impl Hub {
         let _ = self.tx.send(Outbound::Preview(Arc::new(jpeg)));
     }
 
+    fn send_game(&self, game: &str, bodies: Vec<Value>) {
+        for body in bodies {
+            let msg = ServerMsg::Game {
+                game: game.to_string(),
+                body,
+            };
+            if let Ok(text) = serde_json::to_string(&msg) {
+                let _ = self.tx.send(Outbound::Game {
+                    game: game.into(),
+                    text: text.into(),
+                });
+            }
+        }
+    }
+
     pub fn config(&self) -> Config {
         self.config
             .read()
@@ -186,9 +230,9 @@ impl Hub {
         }
     }
 
-    /// What every client is told after hello: the users, the session, and
-    /// the most recent summary.
-    pub fn welcome(&self) -> Vec<ServerMsg> {
+    /// What a client is told after hello: the users, the session, the most
+    /// recent summary, and the state of each game it listed.
+    pub fn welcome(&self, games: &[String]) -> Vec<ServerMsg> {
         let Ok(store) = self.store.lock() else {
             return Vec::new();
         };
@@ -196,6 +240,17 @@ impl Hub {
         if let Ok(Some(last)) = store.last_ended_session() {
             if let Ok(summary) = Self::summary(&store, &last) {
                 out.push(summary);
+            }
+        }
+        if let Ok(modules) = self.games.lock() {
+            for game in modules
+                .iter()
+                .filter(|g| games.iter().any(|n| n == g.name()))
+            {
+                out.extend(game.welcome().into_iter().map(|body| ServerMsg::Game {
+                    game: game.name().to_string(),
+                    body,
+                }));
             }
         }
         out
@@ -209,27 +264,38 @@ impl Hub {
     }
 
     /// Start a session for a user, ending the active one first. Sends the
-    /// old session's summary, then the new session.
+    /// old session's summary, then the new session, then what each game
+    /// has to say about it.
     pub fn start_session(&self, user: &str, activity: Activity, mode: Mode) -> Result<(), String> {
         let user: i64 = user.parse().map_err(|_| "no such user".to_string())?;
         let store = self.store.lock().map_err(|e| e.to_string())?;
-        if store.user(user).map_err(|e| e.to_string())?.is_none() {
-            return Err("no such user".into());
-        }
+        let who = store
+            .user(user)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no such user".to_string())?;
         if let Some(old) = self.take_active() {
             store
                 .end_session(old.session.id)
                 .map_err(|e| e.to_string())?;
-            self.send(&Self::summary(&store, &old.session)?);
+            self.send(&self.ended_summary(&store, &old.session)?);
         }
         let session = store
             .start_session(user, activity, mode)
             .map_err(|e| e.to_string())?;
         let dir = self.session_dir(&session)?;
         if let Ok(mut active) = self.active.write() {
-            *active = Some(Active { session, dir });
+            *active = Some(Active {
+                session: session.clone(),
+                dir,
+            });
         }
         self.send(&self.session_msg());
+        if let Ok(mut modules) = self.games.lock() {
+            for game in modules.iter_mut() {
+                let bodies = game.session_started(&session, &who);
+                self.send_game(game.name(), bodies);
+            }
+        }
         Ok(())
     }
 
@@ -250,13 +316,38 @@ impl Hub {
         };
         store.end_session(id).map_err(|e| e.to_string())?;
         self.send(&self.session_msg());
-        self.send(&Self::summary(&store, &old.session)?);
+        self.send(&self.ended_summary(&store, &old.session)?);
         Ok(())
     }
 
+    /// Record an event under its session and let every game see it.
     pub fn record_event(&self, session: i64, record: &HitRecord) -> Result<(), String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
-        store.add_event(session, record).map_err(|e| e.to_string())
+        store
+            .add_event(session, record)
+            .map_err(|e| e.to_string())?;
+        let Some(session) = store.session(session).map_err(|e| e.to_string())? else {
+            return Ok(());
+        };
+        if let Ok(mut modules) = self.games.lock() {
+            for game in modules.iter_mut() {
+                let bodies = game.event(&session, record);
+                self.send_game(game.name(), bodies);
+            }
+        }
+        Ok(())
+    }
+
+    /// Hand a front end's body to the named game and send what comes back.
+    pub fn game_message(&self, game: &str, body: Value) -> Result<(), String> {
+        let mut modules = self.games.lock().map_err(|e| e.to_string())?;
+        let module = modules
+            .iter_mut()
+            .find(|g| g.name() == game)
+            .ok_or_else(|| format!("no game {game}"))?;
+        let replies = module.message(body)?;
+        self.send_game(game, replies);
+        Ok(())
     }
 
     fn take_active(&self) -> Option<Active> {
@@ -307,6 +398,19 @@ impl Hub {
             lines: summary_lines(session.activity, &events),
         })
     }
+
+    /// The summary of a session that is ending now, with the games' lines.
+    fn ended_summary(&self, store: &Store, session: &Session) -> Result<ServerMsg, String> {
+        let mut summary = Self::summary(store, session)?;
+        if let (ServerMsg::SessionSummary { lines, .. }, Ok(mut modules)) =
+            (&mut summary, self.games.lock())
+        {
+            for game in modules.iter_mut() {
+                lines.extend(game.session_ended(session));
+            }
+        }
+        Ok(summary)
+    }
 }
 
 #[cfg(test)]
@@ -326,7 +430,41 @@ mod tests {
     fn next(rx: &mut broadcast::Receiver<Outbound>) -> ServerMsg {
         match rx.try_recv().expect("a message") {
             Outbound::Text(text) => serde_json::from_str(&text).unwrap(),
-            Outbound::Preview(_) => panic!("preview"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn game_body(rx: &mut broadcast::Receiver<Outbound>) -> (String, Value) {
+        match rx.try_recv().expect("a message") {
+            Outbound::Game { game, text } => match serde_json::from_str(&text).unwrap() {
+                ServerMsg::Game { game: g, body } => {
+                    assert_eq!(&*game, g);
+                    (g, body)
+                }
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn pitch(clip: &str) -> HitRecord {
+        HitRecord {
+            clip: clip.into(),
+            kind: tracker::EventKind::Pitch,
+            segment: 0,
+            frame_start: 0,
+            frame_end: 1,
+            start: 0.0,
+            exit_velocity: 40.0,
+            launch_angle: 0.0,
+            spray_angle: 0.0,
+            pitch_velocity: None,
+            hit_type: None,
+            contact: None,
+            samples: 1,
+            confident: true,
+            hit: None,
+            pitch: None,
         }
     }
 
@@ -347,8 +485,8 @@ mod tests {
     fn clients_drive_capture_and_last_leave_clears_calibration() {
         let hub = test_hub();
         assert!(!hub.capturing());
-        let a = hub.join("sim", &[]);
-        let b = hub.join("page", &[]);
+        let a = hub.join("sim");
+        let b = hub.join("page");
         assert!(hub.capturing());
         assert_eq!(hub.client_names(), vec!["sim", "page"]);
         hub.set_calibrating(true);
@@ -400,8 +538,84 @@ mod tests {
         );
         assert_eq!(hub.target().1, None);
 
-        let welcome = hub.welcome();
+        let welcome = hub.welcome(&[]);
         assert_eq!(welcome.len(), 3, "users, session, last summary");
         assert!(matches!(&welcome[2], ServerMsg::SessionSummary { session, .. } if session == "2"));
+    }
+
+    /// A game that echoes what it sees, to test routing.
+    struct Echo;
+
+    impl Game for Echo {
+        fn name(&self) -> &'static str {
+            "echo"
+        }
+        fn welcome(&self) -> Vec<Value> {
+            vec![serde_json::json!({"type": "hello"})]
+        }
+        fn session_started(&mut self, session: &Session, user: &tracker::User) -> Vec<Value> {
+            vec![serde_json::json!({"type": "started", "session": session.id, "user": user.name})]
+        }
+        fn session_ended(&mut self, _: &Session) -> Vec<tracker::SummaryLine> {
+            vec![tracker::SummaryLine {
+                label: "ECHOED".into(),
+                value: "1".into(),
+            }]
+        }
+        fn event(&mut self, _: &Session, record: &HitRecord) -> Vec<Value> {
+            vec![serde_json::json!({"type": "saw", "clip": record.clip})]
+        }
+        fn message(&mut self, body: Value) -> Result<Vec<Value>, String> {
+            if body["type"] == "bad" {
+                return Err("bad body".into());
+            }
+            Ok(vec![body])
+        }
+    }
+
+    #[test]
+    fn games_see_sessions_and_events_and_answer_their_clients() {
+        let hub = test_hub();
+        hub.register(Box::new(Echo));
+        assert_eq!(hub.game_names(), vec!["echo"]);
+        assert_eq!(
+            hub.welcome(&["echo".into()]).len(),
+            3,
+            "users, session, hello"
+        );
+        assert_eq!(hub.welcome(&["other".into()]).len(), 2);
+
+        hub.add_user("Sam").unwrap();
+        let mut rx = hub.tx.subscribe();
+        hub.start_session("1", Activity::Pitching, Mode::Game)
+            .unwrap();
+        assert!(matches!(next(&mut rx), ServerMsg::Session { .. }));
+        let (game, body) = game_body(&mut rx);
+        assert_eq!(
+            (game.as_str(), &body["user"]),
+            ("echo", &Value::from("Sam"))
+        );
+
+        hub.record_event(1, &pitch("0001")).unwrap();
+        assert_eq!(game_body(&mut rx).1["clip"], "0001");
+
+        hub.game_message("echo", serde_json::json!({"type": "ping"}))
+            .unwrap();
+        assert_eq!(game_body(&mut rx).1["type"], "ping");
+        assert_eq!(
+            hub.game_message("echo", serde_json::json!({"type": "bad"})),
+            Err("bad body".into())
+        );
+        assert!(hub.game_message("none", Value::Null).is_err());
+
+        hub.end_session("1").unwrap();
+        assert!(matches!(
+            next(&mut rx),
+            ServerMsg::Session { session: None }
+        ));
+        let ServerMsg::SessionSummary { lines, .. } = next(&mut rx) else {
+            panic!("summary");
+        };
+        assert_eq!(lines.last().unwrap().label, "ECHOED");
     }
 }

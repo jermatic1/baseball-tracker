@@ -73,4 +73,4 @@ Everything lives in a data directory, `data` by default: the config, the calibra
 
 ## Simulators
 
-Simulators find the tracker on the local network and receive every hit over a WebSocket. The protocol is described in [docs/protocol.md](docs/protocol.md).
+Simulators find the tracker on the local network and receive every hit over a WebSocket. The protocol and the game modules are described in [docs/protocol.md](docs/protocol.md).

@@ -9,12 +9,14 @@ name = "tracker"
 path = "src/main.rs"
 
 [features]
-default = ["detect"]
+default = ["detect", "challenges"]
 oak = ["device/oak", "detect"]
+challenges = ["dep:challenges"]
 detect = ["dep:ultralytics-inference", "ultralytics-inference/nvidia", "dep:ort", "ort/load-dynamic", "ort/cuda", "ort/tensorrt"]
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
+challenges = { path = "../challenges", optional = true }
 clap = { version = "4", features = ["derive"] }
 device = { path = "../device" }
 futures-util = "0.3"

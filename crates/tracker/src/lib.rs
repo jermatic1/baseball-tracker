@@ -1,6 +1,7 @@
 pub mod clips;
 pub mod config;
 pub mod flight;
+pub mod game;
 pub mod geom;
 pub mod mot;
 pub mod plate;
@@ -19,6 +20,7 @@ pub use clips::{
 pub use config::{
     CaptureConfig, Config, FlightConfig, MountConfig, PitchingConfig, WatchConfig, ZoneConfig,
 };
+pub use game::Game;
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use rectify::{Eye, Rectifier};

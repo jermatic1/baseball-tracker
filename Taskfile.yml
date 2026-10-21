@@ -31,6 +31,7 @@ tasks:
     cmds:
       - cargo clippy --workspace --all-targets -- -D warnings
       - cargo clippy --workspace --all-targets --features oak -- -D warnings
+      - cargo clippy -p cli --all-targets --no-default-features --features detect -- -D warnings
 
   onnxruntime:
     desc: Put the platform's ONNX Runtime next to the release binary
