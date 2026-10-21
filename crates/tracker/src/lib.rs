@@ -26,7 +26,7 @@ pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Tra
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use rectify::{Eye, Rectifier};
 pub use rng::Rng;
-pub use stats::{summary_lines, SummaryLine};
+pub use stats::{session_stats, summary_lines, SessionStats, SummaryLine};
 pub use stereo::{stereo_calib_from_device, StereoCalib};
 pub use store::{Activity, Mode, Session, Store, User};
 pub use track::{

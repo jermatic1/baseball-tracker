@@ -113,6 +113,12 @@ connect("tracker page", {
     document.getElementById("end").hidden = !session;
     loadHistory();
   },
+  session_stats(m) {
+    const mph = (v) => (v == null ? "-" : `${v.toFixed(1)} MPH`);
+    const live = [`PITCHES ${m.pitches}`, `STRIKES ${m.strikes}`, `PITCH ${mph(m.avg_pitch_mph)} / ${mph(m.top_pitch_mph)}`,
+      `EXIT ${mph(m.avg_exit_mph)} / ${mph(m.top_exit_mph)}`, `LONGEST ${m.longest_ft == null ? "-" : m.longest_ft.toFixed(1) + " FT"}`];
+    summaryEl.textContent = `session ${m.session} live: ` + live.join(" | ");
+  },
   session_summary(m) {
     summaryEl.textContent = `session ${m.session} (${userName(m.user)}): ` +
       m.lines.map((l) => `${l.label} ${l.value}`).join(" | ");

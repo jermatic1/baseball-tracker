@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde_json::Value;
 use tokio::sync::broadcast;
 use tracker::{
-    summary_lines, Activity, Config, DataDir, Game, HitRecord, Mode, MountConfig, Session, Store,
+    session_stats, summary_lines, Activity, Config, DataDir, Game, HitRecord, Mode, MountConfig,
+    Session, Store,
 };
 
 use crate::protocol::{ServerMsg, SessionInfo, UserInfo};
@@ -237,6 +238,11 @@ impl Hub {
             return Vec::new();
         };
         let mut out = vec![self.users_msg(&store), self.session_msg()];
+        if let Some(active) = self.active.read().ok().and_then(|a| a.clone()) {
+            if let Ok(stats) = Self::stats_msg(&store, active.session.id) {
+                out.push(stats);
+            }
+        }
         if let Ok(Some(last)) = store.last_ended_session() {
             if let Ok(summary) = Self::summary(&store, &last) {
                 out.push(summary);
@@ -290,6 +296,7 @@ impl Hub {
             });
         }
         self.send(&self.session_msg());
+        self.send(&Self::stats_msg(&store, session.id)?);
         if let Ok(mut modules) = self.games.lock() {
             for game in modules.iter_mut() {
                 let bodies = game.session_started(&session, &who);
@@ -353,11 +360,23 @@ impl Hub {
             });
         }
         if let Some(session) = session {
+            if !records.is_empty() {
+                let store = self.store.lock().map_err(|e| e.to_string())?;
+                self.send(&Self::stats_msg(&store, session)?);
+            }
             for record in &records {
                 self.notify_games(session, record)?;
             }
         }
         Ok(())
+    }
+
+    fn stats_msg(store: &Store, session: i64) -> Result<ServerMsg, String> {
+        let events = store.events(session).map_err(|e| e.to_string())?;
+        Ok(ServerMsg::SessionStats {
+            session: session.to_string(),
+            stats: session_stats(&events),
+        })
     }
 
     fn store_event(&self, session: i64, record: &HitRecord) -> Result<(), String> {
@@ -564,6 +583,15 @@ mod tests {
             panic!("session");
         };
         assert_eq!(s.activity, Activity::Hitting);
+        let ServerMsg::SessionStats { session, stats } = next(&mut rx) else {
+            panic!("stats");
+        };
+        assert_eq!(
+            (session.as_str(), stats.pitches, stats.top_exit_mph),
+            ("1", 0, None)
+        );
+        let welcome = hub.welcome(&[]);
+        assert!(matches!(&welcome[2], ServerMsg::SessionStats { session, .. } if session == "1"));
         let (dir, id) = hub.target();
         assert_eq!(id, Some(1));
         assert!(dir.dir.join("config.toml").exists());
@@ -575,6 +603,7 @@ mod tests {
             matches!(next(&mut rx), ServerMsg::SessionSummary { session, .. } if session == "1")
         );
         assert!(matches!(next(&mut rx), ServerMsg::Session { session: Some(s) } if s.id == "2"));
+        assert!(matches!(next(&mut rx), ServerMsg::SessionStats { session, .. } if session == "2"));
 
         assert!(hub.end_session("1").is_err());
         hub.end_session("2").unwrap();
@@ -639,6 +668,7 @@ mod tests {
         hub.start_session("1", Activity::Pitching, Mode::Game)
             .unwrap();
         assert!(matches!(next(&mut rx), ServerMsg::Session { .. }));
+        assert!(matches!(next(&mut rx), ServerMsg::SessionStats { .. }));
         let (game, body) = game_body(&mut rx);
         assert_eq!(
             (game.as_str(), &body["user"]),
@@ -649,6 +679,10 @@ mod tests {
         hub.publish(&dir, Some(1), "0001", vec![pitch("0001")])
             .unwrap();
         assert!(matches!(next(&mut rx), ServerMsg::Event { clip, .. } if clip == "0001"));
+        let ServerMsg::SessionStats { stats, .. } = next(&mut rx) else {
+            panic!("stats after the event");
+        };
+        assert_eq!(stats.pitches, 1);
         assert_eq!(
             game_body(&mut rx).1["clip"],
             "0001",
