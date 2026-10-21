@@ -11,6 +11,7 @@ mod history;
 mod hub;
 mod jpeg;
 mod label;
+mod mock;
 mod protocol;
 #[cfg(feature = "detect")]
 mod replay;
@@ -69,6 +70,14 @@ enum Command {
         #[arg(long)]
         clip: Option<String>,
     },
+    /// Serve the socket with no camera, making up a pitch or hit every
+    /// few seconds, for working on simulators and pages anywhere.
+    Mock {
+        data: PathBuf,
+        /// Seconds between made-up events.
+        #[arg(long, default_value_t = 4.0)]
+        period: f64,
+    },
     /// Track live: serve the socket, and while a client is
     /// connected find the ball in every frame, measure each hit or throw,
     /// broadcast it, and save the clip.
@@ -107,6 +116,7 @@ async fn run() -> Result<(), String> {
         Command::Label { data, bind } => label(data, bind).await,
         Command::Synth { data } => synth(data),
         Command::Detect { data, model, clip } => detect(data, model, clip).await,
+        Command::Mock { data, period } => mock::mock(data, period).await,
         Command::Watch {
             data,
             model,

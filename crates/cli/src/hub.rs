@@ -320,13 +320,57 @@ impl Hub {
         Ok(())
     }
 
-    /// Record an event under its session and let every game see it.
-    pub fn record_event(&self, session: i64, record: &HitRecord) -> Result<(), String> {
+    /// The active session's activity, if any.
+    pub fn activity(&self) -> Option<Activity> {
+        self.active
+            .read()
+            .ok()
+            .and_then(|a| a.as_ref().map(|a| a.session.activity))
+    }
+
+    /// File a clip's records: into the directory's hits file, under the
+    /// session if there is one, out to every client, and then to the games,
+    /// so a game's reply always follows the event it is about.
+    pub fn publish(
+        &self,
+        dir: &DataDir,
+        session: Option<i64>,
+        clip: &str,
+        records: Vec<HitRecord>,
+    ) -> Result<(), String> {
+        let existing = dir.hits().map_err(|e| e.to_string())?;
+        let hits = tracker::merge_clip_hits(existing, clip, records.clone());
+        dir.write_hits(&hits).map_err(|e| e.to_string())?;
+        if let Some(session) = session {
+            for record in &records {
+                self.store_event(session, record)?;
+            }
+        }
+        for record in &records {
+            self.send(&ServerMsg::Event {
+                clip: clip.to_string(),
+                record: record.clone(),
+            });
+        }
+        if let Some(session) = session {
+            for record in &records {
+                self.notify_games(session, record)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn store_event(&self, session: i64, record: &HitRecord) -> Result<(), String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
-        store
-            .add_event(session, record)
-            .map_err(|e| e.to_string())?;
-        let Some(session) = store.session(session).map_err(|e| e.to_string())? else {
+        store.add_event(session, record).map_err(|e| e.to_string())
+    }
+
+    fn notify_games(&self, session: i64, record: &HitRecord) -> Result<(), String> {
+        let session = {
+            let store = self.store.lock().map_err(|e| e.to_string())?;
+            store.session(session).map_err(|e| e.to_string())?
+        };
+        let Some(session) = session else {
             return Ok(());
         };
         if let Ok(mut modules) = self.games.lock() {
@@ -601,8 +645,16 @@ mod tests {
             ("echo", &Value::from("Sam"))
         );
 
-        hub.record_event(1, &pitch("0001")).unwrap();
-        assert_eq!(game_body(&mut rx).1["clip"], "0001");
+        let (dir, _) = hub.target();
+        hub.publish(&dir, Some(1), "0001", vec![pitch("0001")])
+            .unwrap();
+        assert!(matches!(next(&mut rx), ServerMsg::Event { clip, .. } if clip == "0001"));
+        assert_eq!(
+            game_body(&mut rx).1["clip"],
+            "0001",
+            "games answer after the event"
+        );
+        assert_eq!(dir.hits().unwrap().len(), 1);
 
         hub.game_message("echo", serde_json::json!({"type": "ping"}))
             .unwrap();
