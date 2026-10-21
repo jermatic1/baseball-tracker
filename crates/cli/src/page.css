@@ -2,6 +2,7 @@ body { font: 14px sans-serif; background: #111; color: #eee; margin: 16px; }
 nav a { color: #9cf; margin-right: 12px; text-decoration: none; }
 nav a.here { color: #fff; border-bottom: 1px solid #fff; }
 h1 { font-size: 20px; margin: 12px 0; }
+h2 { font-size: 16px; margin: 20px 0 0; color: #aaa; }
 img { background: #000; max-width: 100%; display: block; }
 #view { position: relative; display: inline-block; }
 #boxes, #overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
@@ -15,4 +16,5 @@ button, select, input { margin: 4px 4px 0 0; padding: 6px 10px; }
 #status { margin-top: 8px; min-height: 1.2em; color: #f88; }
 table { border-collapse: collapse; margin-top: 12px; font-family: monospace; }
 td, th { padding: 2px 10px; text-align: right; border-bottom: 1px solid #333; }
+#users td, #sessions td { text-align: left; }
 th { color: #aaa; font-weight: normal; }

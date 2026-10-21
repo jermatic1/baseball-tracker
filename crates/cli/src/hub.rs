@@ -350,6 +350,11 @@ impl Hub {
         Ok(())
     }
 
+    pub fn history(&self) -> Result<crate::history::History, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        crate::history::build(&store).map_err(|e| e.to_string())
+    }
+
     fn take_active(&self) -> Option<Active> {
         self.active.write().ok().and_then(|mut a| a.take())
     }

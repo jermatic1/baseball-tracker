@@ -269,6 +269,7 @@ pub(crate) mod server {
                 "/page.css",
                 get(|| page("text/css", include_str!("page.css"))),
             )
+            .route("/api/history", get(history))
             .route("/games", get(games))
             .route("/games/{name}", get(game_page))
             .route("/ws", get(ws))
@@ -390,6 +391,12 @@ pub(crate) mod server {
 
     async fn page(content_type: &'static str, body: &'static str) -> Response {
         ([(axum::http::header::CONTENT_TYPE, content_type)], body).into_response()
+    }
+
+    async fn history(
+        State(app): State<App>,
+    ) -> Result<axum::Json<crate::history::History>, crate::error::AppError> {
+        Ok(axum::Json(app.hub.history()?))
     }
 
     /// The registered game modules, for the pages' navigation.
