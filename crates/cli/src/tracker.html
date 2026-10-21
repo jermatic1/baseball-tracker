@@ -25,6 +25,16 @@
   <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>carry ft</th><th>pitch</th><th>plate mph</th><th>location</th><th>simulated</th><th>call</th><th>contact</th><th>samples</th></tr></thead>
   <tbody></tbody>
 </table>
+<h2>Users</h2>
+<table id="users">
+  <thead><tr><th>user</th><th>sessions</th><th>hitting</th><th>pitching</th></tr></thead>
+  <tbody></tbody>
+</table>
+<h2>Sessions</h2>
+<table id="sessions">
+  <thead><tr><th>id</th><th>user</th><th>activity</th><th>mode</th><th>started</th><th>ended</th><th>summary</th></tr></thead>
+  <tbody></tbody>
+</table>
 <script src="/page.js"></script>
 <script>
 const statusEl = document.getElementById("status");
@@ -37,6 +47,27 @@ let users = [];
 let session = null;
 
 const userName = (id) => (users.find((u) => u.id === id) || { name: id }).name;
+const lines = (l) => l.map((x) => `${x.label} ${x.value}`).join(" | ");
+const when = (t) => (t ? new Date(t.replace(" ", "T") + "Z").toLocaleString() : "");
+
+// Every user's stats and every session, from the store.
+function loadHistory() {
+  fetch("/api/history").then((r) => r.json()).then((h) => {
+    const ut = document.querySelector("#users tbody");
+    ut.replaceChildren(...h.users.map((u) => {
+      const row = document.createElement("tr");
+      [u.name, u.sessions, lines(u.hitting), lines(u.pitching)].forEach((v) => cell(row, v));
+      return row;
+    }));
+    const st = document.querySelector("#sessions tbody");
+    st.replaceChildren(...h.sessions.map((s) => {
+      const row = document.createElement("tr");
+      [s.id, userName(s.user), s.activity, s.mode, when(s.started), s.ended ? when(s.ended) : "active", lines(s.lines)]
+        .forEach((v) => cell(row, v));
+      return row;
+    }));
+  }).catch(() => {});
+}
 
 connect("tracker page", {
   open() {
@@ -68,6 +99,7 @@ connect("tracker page", {
     const chosen = userEl.value;
     userEl.replaceChildren(...users.map((u) => new Option(u.name, u.id)));
     if (users.some((u) => u.id === chosen)) userEl.value = chosen;
+    loadHistory();
   },
   session(m) {
     session = m.session;
@@ -79,6 +111,7 @@ connect("tracker page", {
     }
     document.getElementById("start").hidden = !!session;
     document.getElementById("end").hidden = !session;
+    loadHistory();
   },
   session_summary(m) {
     summaryEl.textContent = `session ${m.session} (${userName(m.user)}): ` +

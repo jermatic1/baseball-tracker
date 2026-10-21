@@ -7,6 +7,7 @@ mod detect;
 mod detector;
 mod discovery;
 mod error;
+mod history;
 mod hub;
 mod jpeg;
 mod label;
