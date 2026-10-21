@@ -1,4 +1,5 @@
 use crate::config::MountConfig;
+use crate::units::metres;
 
 const G: f64 = 9.80665;
 const MPS_PER_MPH: f64 = 0.44704;
@@ -38,9 +39,9 @@ pub struct Sample {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HitEstimate {
-    pub exit_velocity_mph: f64,
-    pub launch_angle_deg: f64,
-    pub spray_angle_deg: f64,
+    pub exit_velocity: f64,
+    pub launch_angle: f64,
+    pub spray_angle: f64,
     pub samples: usize,
     pub confident: bool,
 }
@@ -105,10 +106,10 @@ fn rodrigues(v: [f64; 3], axis: [f64; 3], rad: f64) -> [f64; 3] {
 
 fn camera_pose(mount: &MountConfig) -> Pose {
     // field: +X RF, +Y up, -Z CF
-    let lat = mount.lateral_offset_m;
-    let dist = mount.distance_from_plate_m;
+    let lat = metres(mount.lateral);
+    let dist = metres(mount.distance);
     let z = -(dist * dist - lat * lat).max(0.0).sqrt();
-    let pos = [lat, mount.height_m, z];
+    let pos = [lat, metres(mount.height), z];
 
     let mut look = scale(pos, -1.0);
     if norm(look) < 1e-12 {
@@ -117,7 +118,7 @@ fn camera_pose(mount: &MountConfig) -> Pose {
         look = normalize(look);
     }
 
-    look = rotate_y(look, mount.yaw_deg.to_radians());
+    look = rotate_y(look, mount.yaw.to_radians());
 
     let world_up = [0.0, 1.0, 0.0];
     let mut right = cross(world_up, look);
@@ -126,7 +127,7 @@ fn camera_pose(mount: &MountConfig) -> Pose {
     }
     right = normalize(right);
 
-    look = normalize(rodrigues(look, right, -mount.pitch_deg.to_radians()));
+    look = normalize(rodrigues(look, right, -mount.pitch.to_radians()));
     let down = normalize(cross(right, look));
     Pose {
         pos,
@@ -136,10 +137,9 @@ fn camera_pose(mount: &MountConfig) -> Pose {
     }
 }
 
+/// Field +X must point toward right field whichever side the camera is on.
 fn needs_x_flip(mount: &MountConfig) -> bool {
-    let pose = camera_pose(mount);
-    let depth_is_rf = pose.forward[0] > 0.0;
-    depth_is_rf != mount.positive_depth_is_rf
+    camera_pose(mount).forward[0] <= 0.0
 }
 
 pub fn unproject(u: f64, v: f64, depth_m: f64, intr: &Intrinsics, mount: &MountConfig) -> [f64; 3] {
@@ -213,7 +213,11 @@ pub struct Trajectory {
 
 impl Trajectory {
     pub fn at(&self, t_ns: u64) -> [f64; 3] {
-        let t = (t_ns as f64 - self.t0_ns as f64) / 1e9;
+        self.at_s((t_ns as f64 - self.t0_ns as f64) / 1e9)
+    }
+
+    /// Position `t` seconds after `t0_ns`; negative looks back.
+    pub fn at_s(&self, t: f64) -> [f64; 3] {
         [
             self.p0[0] + self.v[0] * t,
             self.p0[1] + self.v[1] * t - 0.5 * G * t * t,
@@ -221,22 +225,26 @@ impl Trajectory {
         ]
     }
 
+    pub fn velocity_s(&self, t: f64) -> [f64; 3] {
+        [self.v[0], self.v[1] - G * t, self.v[2]]
+    }
+
     pub fn estimate(&self, samples: usize) -> Option<HitEstimate> {
         let [vx, vy, vz] = self.v;
         let speed = (vx * vx + vy * vy + vz * vz).sqrt();
-        let exit_velocity_mph = speed / MPS_PER_MPH;
-        let launch_angle_deg = vy.atan2((vx * vx + vz * vz).sqrt()).to_degrees();
-        let spray_angle_deg = vx.atan2(-vz).to_degrees();
-        if ![exit_velocity_mph, launch_angle_deg, spray_angle_deg]
+        let exit_velocity = speed / MPS_PER_MPH;
+        let launch_angle = vy.atan2((vx * vx + vz * vz).sqrt()).to_degrees();
+        let spray_angle = vx.atan2(-vz).to_degrees();
+        if ![exit_velocity, launch_angle, spray_angle]
             .iter()
             .all(|v| v.is_finite())
         {
             return None;
         }
         Some(HitEstimate {
-            exit_velocity_mph,
-            launch_angle_deg,
-            spray_angle_deg,
+            exit_velocity,
+            launch_angle,
+            spray_angle,
             samples,
             confident: samples >= 4,
         })

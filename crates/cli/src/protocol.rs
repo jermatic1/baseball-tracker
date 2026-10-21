@@ -1,5 +1,6 @@
 //! Messages on the `/ws` socket. JSON text frames both ways; preview
-//! JPEGs travel as binary frames.
+//! JPEGs travel as binary frames. Feet, inches, mph, degrees, seconds;
+//! exposure in microseconds.
 
 use serde::{Deserialize, Serialize};
 use tracker::{HitRecord, MountConfig};
@@ -18,7 +19,7 @@ pub enum ClientMsg {
     /// Absolute camera controls; absent fields are left alone.
     Set {
         #[serde(default)]
-        exposure_us: Option<u32>,
+        exposure: Option<u32>,
         #[serde(default)]
         gain: Option<u32>,
         #[serde(default)]
@@ -64,7 +65,7 @@ pub enum ServerMsg {
         found: bool,
         corners: Option<Vec<[f64; 2]>>,
         reprojected: Option<Vec<[f64; 2]>>,
-        rms_px: Option<f64>,
+        rms: Option<f64>,
         mount: Option<MountConfig>,
         applied: bool,
     },
@@ -81,7 +82,7 @@ pub struct Status {
     pub capturing: bool,
     pub calibrating: bool,
     pub recording: bool,
-    pub exposure_us: u32,
+    pub exposure: u32,
     pub gain: u32,
     pub ir_flood: f32,
     pub ir_dot: f32,
@@ -90,9 +91,9 @@ pub struct Status {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraStats {
-    pub left_fps: f64,
-    pub right_fps: f64,
-    pub pair_fps: f64,
+    pub left_rate: f64,
+    pub right_rate: f64,
+    pub pair_rate: f64,
     pub left_gaps: u64,
     pub right_gaps: u64,
     pub unpaired: u64,
@@ -103,9 +104,9 @@ impl CameraStats {
     pub fn from_device(s: device::CaptureStats, record_drops: u64) -> Self {
         let per_s = |n: u64| (n as f64 / s.seconds.max(1e-3)).round();
         Self {
-            left_fps: per_s(s.left),
-            right_fps: per_s(s.right),
-            pair_fps: per_s(s.pairs),
+            left_rate: per_s(s.left),
+            right_rate: per_s(s.right),
+            pair_rate: per_s(s.pairs),
             left_gaps: s.left_gaps,
             right_gaps: s.right_gaps,
             unpaired: s.unpaired,
@@ -119,7 +120,7 @@ impl CameraStats {
 pub struct LiveStatus {
     pub state: String,
     pub provider: String,
-    pub fps: f64,
+    pub rate: f64,
     pub lag: u64,
     pub drops: u64,
     pub clips: u64,
@@ -143,7 +144,7 @@ mod tests {
         });
         roundtrip(ClientMsg::Preview { enabled: true });
         roundtrip(ClientMsg::Set {
-            exposure_us: Some(500),
+            exposure: Some(500),
             gain: None,
             ir_flood: Some(0.2),
             ir_dot: None,
@@ -170,7 +171,7 @@ mod tests {
             set,
             ClientMsg::Set {
                 gain: Some(1200),
-                exposure_us: None,
+                exposure: None,
                 ..
             }
         ));
@@ -182,9 +183,9 @@ mod tests {
         let mount = tracker::SessionConfig::example().mount;
         roundtrip(ServerMsg::Status(Status {
             camera: Some(CameraStats {
-                left_fps: 100.0,
-                right_fps: 100.0,
-                pair_fps: 100.0,
+                left_rate: 100.0,
+                right_rate: 100.0,
+                pair_rate: 100.0,
                 left_gaps: 0,
                 right_gaps: 0,
                 unpaired: 0,
@@ -195,7 +196,7 @@ mod tests {
             capturing: true,
             calibrating: false,
             recording: false,
-            exposure_us: 600,
+            exposure: 600,
             gain: 1600,
             ir_flood: 0.0,
             ir_dot: 0.0,
@@ -205,7 +206,7 @@ mod tests {
             found: true,
             corners: Some(vec![[1.0, 2.0]; 5]),
             reprojected: None,
-            rms_px: Some(0.4),
+            rms: Some(0.4),
             mount: Some(mount),
             applied: false,
         });

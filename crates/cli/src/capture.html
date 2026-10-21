@@ -31,8 +31,8 @@ th { color: #aaa; font-weight: normal; }
 <div id="detector" class="mono"></div>
 <div id="calibration" class="mono"></div>
 <div class="row">
-  <button data-set="exposure_us" data-delta="-100">Exposure −100 µs</button>
-  <button data-set="exposure_us" data-delta="100">Exposure +100 µs</button>
+  <button data-set="exposure" data-delta="-100">Exposure −100 µs</button>
+  <button data-set="exposure" data-delta="100">Exposure +100 µs</button>
   <button data-set="gain" data-delta="-100">ISO −100</button>
   <button data-set="gain" data-delta="100">ISO +100</button>
   <button data-set="ir_flood" data-delta="-0.2">Flood −20%</button>
@@ -50,7 +50,7 @@ th { color: #aaa; font-weight: normal; }
 <p>Calibrate with the plate clear and no ball on it. Detected plate in green, fitted pose in yellow. Capture pauses while calibrating.</p>
 <div id="status"></div>
 <table id="events">
-  <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>pitch</th><th>contact</th><th>samples</th></tr></thead>
+  <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>carry ft</th><th>pitch</th><th>plate mph</th><th>location</th><th>simulated</th><th>contact</th><th>samples</th></tr></thead>
   <tbody></tbody>
 </table>
 <script>
@@ -62,7 +62,7 @@ const calibEl = document.getElementById("calibration");
 const events = document.querySelector("#events tbody");
 let ws = null;
 let url = null;
-let controls = { exposure_us: 600, gain: 1600, ir_flood: 0, ir_dot: 0 };
+let controls = { exposure: 600, gain: 1600, ir_flood: 0, ir_dot: 0 };
 let retry = 1000;
 
 function connect() {
@@ -97,14 +97,14 @@ function handle(m) {
   if (m.type === "status") {
     const c = m.camera;
     cameraEl.textContent = c
-      ? `left ${c.left_fps} fps, right ${c.right_fps} fps, pairs ${c.pair_fps} fps | gaps L${c.left_gaps} R${c.right_gaps}, unpaired ${c.unpaired}` +
+      ? `left ${c.left_rate} fps, right ${c.right_rate} fps, pairs ${c.pair_rate} fps | gaps L${c.left_gaps} R${c.right_gaps}, unpaired ${c.unpaired}` +
         ` | clients ${m.clients.join(", ") || "none"} | ${m.capturing ? "capturing" : "idle"}` +
-        ` | ${m.exposure_us} µs, ISO ${m.gain}, flood ${Math.round(m.ir_flood * 100)}%, dot ${Math.round(m.ir_dot * 100)}%`
+        ` | ${m.exposure} µs, ISO ${m.gain}, flood ${Math.round(m.ir_flood * 100)}%, dot ${Math.round(m.ir_dot * 100)}%`
       : "waiting for the camera";
-    controls = { exposure_us: m.exposure_us, gain: m.gain, ir_flood: m.ir_flood, ir_dot: m.ir_dot };
+    controls = { exposure: m.exposure, gain: m.gain, ir_flood: m.ir_flood, ir_dot: m.ir_dot };
     const d = m.detector;
     detectorEl.textContent = d
-      ? `detector ${d.state} | ${d.fps.toFixed(0)} fps on ${d.provider}, ${d.lag} behind, ${d.drops} dropped | clips ${d.clips}` +
+      ? `detector ${d.state} | ${d.rate.toFixed(0)} fps on ${d.provider}, ${d.lag} behind, ${d.drops} dropped | clips ${d.clips}` +
         (d.last_event ? ` | ${d.last_event}` : "")
       : "";
     drawBoxes(d ? d.boxes : []);
@@ -112,14 +112,17 @@ function handle(m) {
     document.getElementById("stop").disabled = !m.recording;
     setCalibrating(m.calibrating);
     if (!m.calibrating) {
-      calibEl.textContent = `mount: ${m.mount.distance_from_plate_m.toFixed(2)} m from plate, ${m.mount.height_m.toFixed(2)} m high, lateral ${m.mount.lateral_offset_m.toFixed(2)} m`;
+      calibEl.textContent = `mount: ${m.mount.distance.toFixed(1)} ft from plate, ${m.mount.height.toFixed(1)} ft high, lateral ${m.mount.lateral.toFixed(1)} ft`;
     }
   } else if (m.type === "event") {
     const r = m.record;
     const row = document.createElement("tr");
     const num = (v, d) => (v == null ? "-" : v.toFixed(d));
-    [m.clip, r.kind, r.hit_type || "-", num(r.exit_velocity_mph, 1), num(r.launch_angle_deg, 1),
-     num(r.spray_angle_deg, 1), num(r.pitch_mph, 1), r.contact ? r.contact.kind : "-", r.samples]
+    const loc = (l) => (l ? `${l.side.toFixed(0)}, ${l.height.toFixed(0)} in` : "-");
+    [m.clip, r.kind, r.hit_type || "-", num(r.exit_velocity, 1), num(r.launch_angle, 1),
+     num(r.spray_angle, 1), r.hit ? r.hit.carry.toFixed(0) : "-", num(r.pitch_velocity, 1),
+     r.pitch ? r.pitch.plate_velocity.toFixed(1) : "-", loc(r.pitch && r.pitch.location),
+     loc(r.pitch && r.pitch.simulated_location), r.contact ? r.contact.kind : "-", r.samples]
       .forEach((v) => { const td = document.createElement("td"); td.textContent = v; row.appendChild(td); });
     events.prepend(row);
     while (events.children.length > 20) events.lastChild.remove();
@@ -129,8 +132,8 @@ function handle(m) {
       calibEl.textContent = "calibrating: plate not found";
     } else {
       const p = m.mount;
-      calibEl.textContent = `${m.applied ? "applied" : "calibrating"}: rms ${m.rms_px.toFixed(2)} px, ` +
-        `${p.distance_from_plate_m.toFixed(2)} m from plate, ${p.height_m.toFixed(2)} m high, lateral ${p.lateral_offset_m.toFixed(2)} m, yaw ${p.yaw_deg.toFixed(1)}, pitch ${p.pitch_deg.toFixed(1)}`;
+      calibEl.textContent = `${m.applied ? "applied" : "calibrating"}: rms ${m.rms.toFixed(2)} px, ` +
+        `${p.distance.toFixed(1)} ft from plate, ${p.height.toFixed(1)} ft high, lateral ${p.lateral.toFixed(1)} ft, yaw ${p.yaw.toFixed(1)}, pitch ${p.pitch.toFixed(1)}`;
     }
   } else if (m.type === "error") {
     statusEl.textContent = m.message;
@@ -175,7 +178,7 @@ document.querySelectorAll("[data-set]").forEach((b) => {
   b.onclick = () => {
     const key = b.dataset.set;
     const value = controls[key] + Number(b.dataset.delta);
-    send({ type: "set", [key]: key === "exposure_us" || key === "gain" ? Math.round(value) : value });
+    send({ type: "set", [key]: key === "exposure" || key === "gain" ? Math.round(value) : value });
   };
 });
 document.getElementById("record").onclick = () => send({ type: "record", action: "start" });

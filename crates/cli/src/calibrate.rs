@@ -14,7 +14,7 @@ pub fn calibrate(path: PathBuf) -> Result<(), String> {
 
     let mut session = tracker::Session::create(&path).map_err(|e| e.to_string())?;
     let c = &session.config.capture;
-    let mut cam = device::OakCamera::open(c.width, c.height, c.fps as f32, c.exposure_us, c.gain)?;
+    let mut cam = device::OakCamera::open(c.width, c.height, c.fps as f32, c.exposure, c.gain)?;
     let deadline = Instant::now() + Duration::from_secs(10);
     let frame = loop {
         if Instant::now() > deadline {
@@ -62,8 +62,8 @@ pub fn calibrate(path: PathBuf) -> Result<(), String> {
 pub fn print_fit(fit: &tracker::plate::PoseFit) {
     let m = &fit.mount;
     println!(
-        "plate fit rms {:.2} px: distance {:.2} m, height {:.2} m, lateral {:.2} m, yaw {:.1} deg, pitch {:.1} deg",
-        fit.rms_px, m.distance_from_plate_m, m.height_m, m.lateral_offset_m, m.yaw_deg, m.pitch_deg
+        "plate fit rms {:.2} px: distance {:.2} ft, height {:.2} ft, lateral {:.2} ft, yaw {:.1} deg, pitch {:.1} deg",
+        fit.rms_px, m.distance, m.height, m.lateral, m.yaw, m.pitch
     );
 }
 

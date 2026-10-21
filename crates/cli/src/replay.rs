@@ -6,9 +6,6 @@ use std::time::{Duration, Instant};
 use device::{Camera, Frame, Intrinsics};
 use tracker::{Clip, Session};
 
-/// Silence between clips in the replayed stream.
-const GAP: Duration = Duration::from_secs(1);
-
 pub struct ClipCamera {
     clips: Vec<Clip>,
     clip: usize,
@@ -20,10 +17,12 @@ pub struct ClipCamera {
     base_ns: u64,
     sequence: u64,
     fps: f64,
+    /// Silence between clips.
+    gap: Duration,
 }
 
 impl ClipCamera {
-    pub fn open(source: &Session) -> Result<Self, String> {
+    pub fn open(source: &Session, gap: Duration) -> Result<Self, String> {
         let mut clips = Vec::new();
         for id in source.clip_ids().map_err(|e| e.to_string())? {
             if let Ok(clip) = source.load_clip(&id) {
@@ -44,10 +43,11 @@ impl ClipCamera {
             clip: 0,
             frame: 0,
             stamps: Vec::new(),
-            clip_start: Instant::now() + GAP,
+            clip_start: Instant::now() + gap,
             base_ns: 1_000_000_000,
             sequence: 0,
             fps,
+            gap,
         };
         cam.load_stamps()?;
         Ok(cam)
@@ -110,8 +110,8 @@ impl Camera for ClipCamera {
         self.sequence += 1;
         self.frame += 1;
         if self.frame >= clip.meta.frame_count {
-            self.clip_start += Duration::from_nanos(rel_ns) + GAP;
-            self.base_ns += rel_ns + GAP.as_nanos() as u64;
+            self.clip_start += Duration::from_nanos(rel_ns) + self.gap;
+            self.base_ns += rel_ns + self.gap.as_nanos() as u64;
             self.clip += 1;
             self.frame = 0;
             if self.clip < self.clips.len() {

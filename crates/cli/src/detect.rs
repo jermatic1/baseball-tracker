@@ -19,7 +19,7 @@ pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Resul
         }
         ids = vec![id];
     }
-    let offset = session.config.stereo.disparity_offset_px;
+    let offset = session.config.stereo.disparity_offset;
     for id in ids {
         let clip = session.load_clip(&id).map_err(|e| e.to_string())?;
         // Factory rectification when the session saved its calibration;

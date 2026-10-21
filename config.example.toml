@@ -1,42 +1,51 @@
+# Distances are feet, speeds mph, angles degrees, times seconds.
+
 [capture]
 # 640x400 is the OV9282 binned mode. The OAK-D delivers about 200 frames a
 # second across both eyes, so 100 fps is the highest rate with no drops.
 width = 640
 height = 400
 fps = 100
-# 600 us keeps a 70 mph ball round; drop to 400 for faster hitters.
+# Microseconds. 600 keeps a 70 mph ball round; drop to 400 for faster hitters.
 # Gain adds no visible noise on this sensor, so run it at the maximum.
-exposure_us = 600
+exposure = 600
 gain = 1600
 
-# Camera beside the plate on the left-field side, looking across it so hits
-# cross the image left to right. Measured: lens 1.74 m from the tee ball,
-# 0.9 m up, the ball 0.65 m left of the camera axis.
+# Camera pose relative to the plate. Calibrate writes this; the numbers here
+# are a camera beside the plate on the left-field side looking across it.
 [mount]
-distance_from_plate_m = 1.74
-height_m = 0.9
-lateral_offset_m = -1.61
-pitch_deg = 30.5
-yaw_deg = 23.0
-positive_depth_is_rf = true
+distance = 5.71
+height = 2.95
+lateral = -5.28
+pitch = 30.5
+yaw = 23.0
 
 [stereo]
-# The raw eyes are not rectified; this is the disparity they show at
-# infinity. Calibrate from one measured distance: measured disparity minus
-# fx * baseline / distance. 17.1 px on this OAK-D at 640 wide.
-disparity_offset_px = 17.1
+# Only for sessions recorded without the camera's saved calibration: the
+# disparity the raw eyes show at infinity, in pixels.
+disparity_offset = 17.1
 
 [tracking]
 # Slowest batted ball reported as a hit. Pitches have no floor.
-min_hit_mph = 15.0
+min_hit_velocity = 15.0
 
-# Live watching. A detected ball that lands farther than move_px from every
-# ball seen in the last tenth of a second has moved; the frames from preroll_s
-# before that until settle_s after the last motion become a clip and are
-# measured at once. keep_clips = false keeps only detections and events.
+# Live watching. A detected ball that lands farther than motion pixels from
+# every ball seen in the last tenth of a second has moved; the frames from
+# preroll before that until settle after the last motion become a clip and
+# are measured at once. keep_clips = false keeps only detections and events.
 [watch]
-move_px = 4.0
-preroll_s = 0.5
-settle_s = 0.15
-max_episode_s = 6.0
+motion = 4.0
+preroll = 0.5
+settle = 0.15
+max_episode = 6.0
 keep_clips = true
+
+# Where the pitcher actually throws from, and the mound distance each pitch's
+# plate location is projected to.
+[pitching]
+actual_distance = 46
+simulated_distance = 46
+
+[flight]
+# Thinner air carries farther.
+altitude = 0

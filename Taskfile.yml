@@ -2,6 +2,7 @@ version: "3"
 
 vars:
   SESSION: '{{.SESSION | default "test-1"}}'
+  GAP: '{{.GAP | default "1"}}'
 
 tasks:
   build:
@@ -46,10 +47,10 @@ tasks:
       - cargo run -p cli --release --features oak --quiet -- watch sessions/{{.SESSION}}
 
   replay:
-    desc: Run a recorded session through the live path without the camera
+    desc: Run a recorded session through the live path without the camera; GAP= seconds between clips
     deps: [onnxruntime]
     cmds:
-      - cargo run -p cli --release --quiet -- watch sessions/{{.SESSION}}-replay --from sessions/{{.SESSION}}
+      - cargo run -p cli --release --quiet -- watch sessions/{{.SESSION}}-replay --from sessions/{{.SESSION}} --gap {{.GAP}}
 
   check:
     desc: Format, lint, and test
