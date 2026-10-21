@@ -156,7 +156,7 @@ pub(crate) mod server {
 
     use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
     use axum::extract::State;
-    use axum::response::{Html, Response};
+    use axum::response::{IntoResponse, Response};
     use axum::routing::get;
     use axum::Router;
     use device::Camera;
@@ -256,7 +256,19 @@ pub(crate) mod server {
         tokio::spawn(preview_producer(app.clone(), Arc::clone(&stopping)));
         tokio::spawn(calibration_sampler(app.clone(), Arc::clone(&stopping)));
         let router = Router::new()
-            .route("/", get(index))
+            .route("/", get(|| page("text/html", include_str!("tracker.html"))))
+            .route(
+                "/setup",
+                get(|| page("text/html", include_str!("setup.html"))),
+            )
+            .route(
+                "/page.js",
+                get(|| page("text/javascript", include_str!("page.js"))),
+            )
+            .route(
+                "/page.css",
+                get(|| page("text/css", include_str!("page.css"))),
+            )
             .route("/ws", get(ws))
             .with_state(app);
         let addr: SocketAddr = BIND
@@ -374,8 +386,8 @@ pub(crate) mod server {
         }
     }
 
-    async fn index() -> Html<&'static str> {
-        Html(include_str!("capture.html"))
+    async fn page(content_type: &'static str, body: &'static str) -> Response {
+        ([(axum::http::header::CONTENT_TYPE, content_type)], body).into_response()
     }
 
     async fn ws(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
