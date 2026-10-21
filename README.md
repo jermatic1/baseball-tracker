@@ -76,13 +76,13 @@ Everything lives in a data directory, `data` by default (`DATA=` for another): t
 
 A session is one user hitting or pitching, from start to end. Sessions are started and ended from the page or by a simulator, and every event during one is recorded under that user. Each session gets `sessions/<id>/` with a snapshot of the config and calibration and its own clips, so it can be reviewed or replayed on its own. Clips with no session active go under the data directory itself and are not recorded as events.
 
-1. **Run.** `task run` opens the camera and serves the socket and a page on port 7880. The page is itself a client: live preview, exposure and gain controls, calibration, users and sessions, and a table of raw events.
-2. **Calibrate, once per camera placement.** With the plate clear and no ball on it, click Calibrate on the page or run `task calibrate`. The camera pose is solved from the plate and written to `[mount]` in the config.
+1. **Run.** `task run` opens the camera and serves the socket and the pages on port 7880. The tracker page at `/` has users, session start and end, and the live events. The setup page at `/setup` has the preview, exposure and gain controls, calibration, and manual recording. Each page is itself a client.
+2. **Calibrate, once per camera placement.** With the plate clear and no ball on it, click Calibrate on the setup page or run `task calibrate`. The camera pose is solved from the plate and written to `[mount]` in the config.
 3. **Train the detector, once.** `task label` serves a page on port 7881 for clicking the ball in recorded frames. `task train` fine-tunes a detector on those labels and writes `models/ball.onnx`, which is loaded on start.
-4. **Hit.** Add a user on the page and start a session. While at least one client is connected, a moving ball is recorded, measured, broadcast to every client, and saved as a clip with its detections. A ball resting on the tee is ignored. With no client connected nothing is detected or recorded. Ctrl-c finishes the open clip.
+4. **Hit.** Add a user on the tracker page and start a session. While at least one client is connected, a moving ball is recorded, measured, broadcast to every client, and saved as a clip with its detections. A ball resting on the tee is ignored. With no client connected nothing is detected or recorded. Ctrl-c finishes the open clip.
 5. **Review.** `task review DATA=data/sessions/3` serves a page on port 7879 that plays each clip with detections drawn and lists every event: hit or pitch, hit type, speed, angles, pitch speed, location and call, and contact.
 
-Offline tools for recorded clips: Record and Stop on the page save a clip by hand (`task capture`), `task detect` runs the detector over saved clips, and `task replay FROM=data/sessions/3` plays a session back through the live path without a camera, with `GAP=5` for five seconds between clips.
+Offline tools for recorded clips: Record and Stop on the setup page save a clip by hand (`task capture`), `task detect` runs the detector over saved clips, and `task replay FROM=data/sessions/3` plays a session back through the live path without a camera, with `GAP=5` for five seconds between clips.
 
 With the prebuilt bundle, run the executable directly: `./tracker watch data`.
 

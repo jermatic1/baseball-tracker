@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tracker</title>
+<link rel="stylesheet" href="/page.css">
+</head>
+<body>
+<nav><a href="/" class="here">Tracker</a><a href="/setup">Setup</a></nav>
+<h1>Tracker</h1>
+<div class="row">
+  <select id="user"></select>
+  <input id="new-user" placeholder="new user" size="12">
+  <button id="add-user">Add user</button>
+  <select id="activity"><option>hitting</option><option>pitching</option></select>
+  <select id="mode"><option>practice</option><option>game</option></select>
+  <button id="start">Start session</button>
+  <button id="end" hidden>End session</button>
+</div>
+<div id="session" class="mono">connecting</div>
+<div id="summary" class="mono"></div>
+<div id="detector" class="mono"></div>
+<div id="status"></div>
+<table id="events">
+  <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>carry ft</th><th>pitch</th><th>plate mph</th><th>location</th><th>simulated</th><th>call</th><th>contact</th><th>samples</th></tr></thead>
+  <tbody></tbody>
+</table>
+<script src="/page.js"></script>
+<script>
+const statusEl = document.getElementById("status");
+const detectorEl = document.getElementById("detector");
+const events = document.querySelector("#events tbody");
+const userEl = document.getElementById("user");
+const sessionEl = document.getElementById("session");
+const summaryEl = document.getElementById("summary");
+let users = [];
+let session = null;
+
+const userName = (id) => (users.find((u) => u.id === id) || { name: id }).name;
+
+connect("tracker page", {
+  open() {
+    statusEl.textContent = "";
+  },
+  close() {
+    sessionEl.textContent = "disconnected, retrying";
+  },
+  status(m) {
+    const d = m.detector;
+    detectorEl.textContent = `${m.capturing ? "capturing" : "idle"} | clients ${m.clients.join(", ") || "none"}` +
+      (d ? ` | detector ${d.state}, ${d.rate.toFixed(0)} fps | clips ${d.clips}` : "");
+  },
+  event(m) {
+    const r = m.record;
+    const row = document.createElement("tr");
+    const num = (v, d) => (v == null ? "-" : v.toFixed(d));
+    const loc = (l) => (l ? `${l.side.toFixed(0)}, ${l.height.toFixed(0)} in` : "-");
+    [m.clip, r.kind, r.hit_type || "-", num(r.exit_velocity, 1), num(r.launch_angle, 1),
+     num(r.spray_angle, 1), r.hit ? r.hit.carry.toFixed(0) : "-", num(r.pitch_velocity, 1),
+     r.pitch ? r.pitch.plate_velocity.toFixed(1) : "-", loc(r.pitch && r.pitch.location),
+     loc(r.pitch && r.pitch.simulated_location), r.pitch ? r.pitch.call : "-",
+     r.contact ? r.contact.kind : "-", r.samples].forEach((v) => cell(row, v));
+    events.prepend(row);
+    while (events.children.length > 20) events.lastChild.remove();
+  },
+  users(m) {
+    users = m.users;
+    const chosen = userEl.value;
+    userEl.replaceChildren(...users.map((u) => new Option(u.name, u.id)));
+    if (users.some((u) => u.id === chosen)) userEl.value = chosen;
+  },
+  session(m) {
+    session = m.session;
+    if (session) {
+      sessionEl.textContent = `session ${session.id}: ${userName(session.user)} ${session.activity}, ${session.mode}`;
+      summaryEl.textContent = "";
+    } else {
+      sessionEl.textContent = "no session";
+    }
+    document.getElementById("start").hidden = !!session;
+    document.getElementById("end").hidden = !session;
+  },
+  session_summary(m) {
+    summaryEl.textContent = `session ${m.session} (${userName(m.user)}): ` +
+      m.lines.map((l) => `${l.label} ${l.value}`).join(" | ");
+  },
+  error(m) {
+    statusEl.textContent = m.request ? `${m.request}: ${m.message}` : m.message;
+  },
+});
+
+document.getElementById("add-user").onclick = () => {
+  const input = document.getElementById("new-user");
+  if (input.value.trim()) send({ type: "add_user", name: input.value.trim() });
+  input.value = "";
+};
+document.getElementById("start").onclick = () => send({
+  type: "start_session",
+  user: userEl.value,
+  activity: document.getElementById("activity").value,
+  mode: document.getElementById("mode").value,
+});
+document.getElementById("end").onclick = () => { if (session) send({ type: "end_session", session: session.id }); };
+</script>
+</body>
+</html>
