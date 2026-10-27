@@ -149,7 +149,7 @@ impl Goal {
         };
         if self
             .min_velocity
-            .is_some_and(|min| record.exit_velocity < min)
+            .is_some_and(|min| p.release_velocity < min)
         {
             return false;
         }
@@ -550,6 +550,7 @@ mod tests {
             confident: true,
             hit: None,
             pitch: Some(PitchPlate {
+                release_velocity: velocity,
                 plate_velocity: velocity - 2.0,
                 location,
                 simulated_location: location,

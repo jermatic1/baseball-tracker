@@ -97,7 +97,7 @@ With the prebuilt bundle, run the executable directly: `./tracker watch data`.
 - `[stereo]`: disparity offset for clips recorded without the camera's saved calibration. New directories do not need it.
 - `[tracking]`: the slowest batted ball reported as a hit, 15 mph by default. Pitches are recorded at any speed.
 - `[watch]`: how far a ball must move to start a clip, the pre-roll and settle times around the motion, and whether clip frames are kept.
-- `[pitching]`: where the pitcher actually throws from and the mound distance each pitch's plate location is projected to.
+- `[pitching]`: where the pitcher actually throws from, which release speed is read at, and the mound distance each pitch's plate location is projected to.
 - `[flight]`: altitude, for the predicted carry of a hit.
 - `[zone]`: the strike zone in inches, which every pitch is called against.
 

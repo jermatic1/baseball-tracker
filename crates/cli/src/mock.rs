@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tracker::geom::launch_velocity;
-use tracker::units::metres;
+use tracker::units::{metres, mph};
 use tracker::{
     flight, Activity, ClipMeta, Config, DataDir, EventKind, HitRecord, HitType, Location,
     PitchPlate, Rng, Store,
@@ -117,6 +117,16 @@ fn base(kind: EventKind, clip: &str, samples: usize) -> HitRecord {
 pub fn mock_pitch(rng: &mut Rng, cfg: &Config, clip: &str) -> HitRecord {
     let zone = cfg.zone;
     let speed = rng.between(35.0, 55.0);
+    let air = flight::air_density(metres(cfg.flight.altitude));
+    let plate_velocity = flight::at_depth(
+        [0.0, metres(5.0), -metres(cfg.pitching.actual_distance)],
+        launch_velocity(speed, 0.0, 180.0),
+        0.0,
+        air,
+    )
+    .map_or(speed, |(_, v)| {
+        mph((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+    });
     let location = Location {
         side: rng.normal() * zone.width / 2.0,
         height: (zone.bottom + zone.top) / 2.0 + rng.normal() * (zone.top - zone.bottom) / 2.0,
@@ -134,7 +144,8 @@ pub fn mock_pitch(rng: &mut Rng, cfg: &Config, clip: &str) -> HitRecord {
         exit_velocity: speed,
         launch_angle: rng.between(-3.0, 3.0),
         pitch: Some(PitchPlate {
-            plate_velocity: speed - 2.0,
+            release_velocity: speed,
+            plate_velocity,
             location,
             simulated_location,
             call,

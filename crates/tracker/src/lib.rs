@@ -86,10 +86,10 @@ pub fn process_clip(
         for (o, depth) in obs.iter().zip(depths) {
             samples.push(sample(o.t_ns, o.cx, o.cy, depth, intr, cfg));
         }
-        let Some((traj, used)) = fit_free_flight(&samples) else {
+        let Some((mut traj, used)) = fit_free_flight(&samples) else {
             continue;
         };
-        let Some(est) = traj.estimate(used) else {
+        let Some(mut est) = traj.estimate(used) else {
             continue;
         };
         let kind = if ev.segment.after_impact() {
@@ -99,6 +99,15 @@ pub fn process_clip(
         } else {
             EventKind::Hit
         };
+        let air = flight::air_density(metres(cfg.flight.altitude));
+        if kind == EventKind::Pitch {
+            // A pitch is watched long enough for drag to pull the drag-free
+            // fit below the speed at the first frame.
+            traj = flight::refine_speed(&traj, &samples[..used], air);
+            if let Some(refined) = traj.estimate(used) {
+                est = refined;
+            }
+        }
         if kind == EventKind::Pitch {
             last_pitch_mph.insert(ev.track_id, est.exit_velocity);
         }
@@ -126,12 +135,9 @@ pub fn process_clip(
             .get(used)
             .or_else(|| impact_next.then(|| samples.last()).flatten())
             .map(|s| contact_at(&traj, s.t_ns));
-        let hit = (kind == EventKind::Hit).then(|| {
-            let air = flight::air_density(metres(cfg.flight.altitude));
-            flight::predict(traj.p0, traj.v, air)
-        });
+        let hit = (kind == EventKind::Hit).then(|| flight::predict(traj.p0, traj.v, air));
         let pitch = (kind == EventKind::Pitch)
-            .then(|| pitch_plate(&traj, &cfg.pitching, &cfg.zone))
+            .then(|| pitch_plate(&traj, &cfg.pitching, &cfg.zone, air))
             .flatten();
         out.push(HitRecord {
             clip: clip_id.to_string(),
@@ -183,21 +189,29 @@ const PLATE_FRONT_M: f64 = -17.0 * 0.0254;
 /// Slowest approach toward the plate that counts as a pitch crossing it.
 const MIN_APPROACH_MPS: f64 = 1.0;
 
-/// Where the fitted flight crosses the front of the plate, and where it would
-/// have crossed had the same throw started the simulated distance away.
-fn pitch_plate(traj: &Trajectory, cfg: &PitchingConfig, zone: &ZoneConfig) -> Option<PitchPlate> {
-    let vz = traj.v[2];
-    if vz < MIN_APPROACH_MPS {
+/// The fitted flight run with drag: back to the configured release distance
+/// for release speed, forward to the front of the plate for plate speed and
+/// location, and on past it to where the same throw would have crossed had
+/// it started the simulated distance away. Release is never extrapolated
+/// farther back than the first frame seen.
+fn pitch_plate(
+    traj: &Trajectory,
+    cfg: &PitchingConfig,
+    zone: &ZoneConfig,
+    air: f64,
+) -> Option<PitchPlate> {
+    if traj.v[2] < MIN_APPROACH_MPS {
         return None;
     }
-    let t = (PLATE_FRONT_M - traj.p0[2]) / vz;
-    let [x, y, _] = traj.at_s(t);
+    let release_z = (-metres(cfg.actual_distance)).min(traj.p0[2]);
+    let (_, release_v) = flight::at_depth(traj.p0, traj.v, release_z, air)?;
+    let ([x, y, _], plate_v) = flight::at_depth(traj.p0, traj.v, PLATE_FRONT_M, air)?;
     if y <= 0.0 {
         return None;
     }
     let extra = metres(cfg.simulated_distance - cfg.actual_distance);
-    let [sx, sy, _] = traj.at_s(t + extra / vz);
-    let [vx, vy, vz] = traj.velocity_s(t);
+    let ([sx, sy, _], _) =
+        flight::at_depth([x, y, PLATE_FRONT_M], plate_v, PLATE_FRONT_M + extra, air)?;
     let simulated_location = Location {
         side: inches(sx),
         height: inches(sy),
@@ -208,7 +222,8 @@ fn pitch_plate(traj: &Trajectory, cfg: &PitchingConfig, zone: &ZoneConfig) -> Op
         Call::Ball
     };
     Some(PitchPlate {
-        plate_velocity: mph((vx * vx + vy * vy + vz * vz).sqrt()),
+        release_velocity: mph(speed(release_v)),
+        plate_velocity: mph(speed(plate_v)),
         location: Location {
             side: inches(x),
             height: inches(y),
@@ -217,6 +232,10 @@ fn pitch_plate(traj: &Trajectory, cfg: &PitchingConfig, zone: &ZoneConfig) -> Op
         call,
         zone: *zone,
     })
+}
+
+fn speed(v: [f64; 3]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// Largest residual a sample may have from the fitted flight before the ball
@@ -862,37 +881,42 @@ mod tests {
             simulated_distance: 46.0,
         };
         let zone = ZoneConfig::default();
-        let p = pitch_plate(&traj, &cfg, &zone).expect("crosses the plate");
+        let air = flight::air_density(0.0);
+        let p = pitch_plate(&traj, &cfg, &zone, air).expect("crosses the plate");
         assert!(p.location.height > 0.0);
         assert!(p.simulated_location.height < p.location.height - 12.0);
         assert!((p.location.side - inches(0.1)).abs() < 1e-9);
-        assert!((p.plate_velocity - mph(20.0)).abs() < 1.0);
-        let same = pitch_plate(&traj, &PitchingConfig::default(), &zone).unwrap();
+        assert!(p.plate_velocity < mph(20.0) && p.plate_velocity > mph(20.0) - 3.0);
+        let same = pitch_plate(&traj, &PitchingConfig::default(), &zone, air).unwrap();
         assert_eq!(same.location, same.simulated_location);
         let away = Trajectory {
             v: [0.0, 0.5, -20.0],
             ..traj
         };
-        assert!(pitch_plate(&away, &cfg, &zone).is_none());
+        assert!(pitch_plate(&away, &cfg, &zone, air).is_none());
     }
 
     #[test]
     fn pitches_are_called_on_the_simulated_crossing() {
         let zone = ZoneConfig::default();
         let cfg = PitchingConfig::default();
+        let air = flight::air_density(0.0);
         let middle = Trajectory {
             t0_ns: 0,
             p0: [0.0, 1.2, -8.0],
             v: [0.0, 0.5, 20.0],
         };
-        let p = pitch_plate(&middle, &cfg, &zone).unwrap();
+        let p = pitch_plate(&middle, &cfg, &zone, air).unwrap();
         assert_eq!(p.call, Call::Strike);
         assert_eq!(p.zone, zone);
         let wide = Trajectory {
             p0: [0.3, 0.9, -8.0],
             ..middle
         };
-        assert_eq!(pitch_plate(&wide, &cfg, &zone).unwrap().call, Call::Ball);
+        assert_eq!(
+            pitch_plate(&wide, &cfg, &zone, air).unwrap().call,
+            Call::Ball
+        );
         // Thrown from closer, the same ball drops below the zone by the mound.
         let close = PitchingConfig {
             actual_distance: 30.0,
@@ -903,9 +927,45 @@ mod tests {
             v: [0.0, 2.0, 20.0],
             ..middle
         };
-        let p = pitch_plate(&low, &close, &zone).unwrap();
+        let p = pitch_plate(&low, &close, &zone, air).unwrap();
         assert!(zone.contains(p.location.side, p.location.height));
         assert_eq!(p.call, Call::Ball);
+    }
+
+    #[test]
+    fn release_and_plate_speeds_follow_drag_over_the_configured_distance() {
+        let zone = ZoneConfig::default();
+        let air = flight::air_density(0.0);
+        // First seen 20 ft out at 50 mph, thrown from 46 ft.
+        let seen = Trajectory {
+            t0_ns: 0,
+            p0: [0.0, 1.5, -metres(20.0)],
+            v: launch_velocity(50.0, 0.0, 180.0),
+        };
+        let p = pitch_plate(&seen, &PitchingConfig::default(), &zone, air).unwrap();
+        assert!(
+            (52.0..53.0).contains(&p.release_velocity),
+            "release {}",
+            p.release_velocity
+        );
+        assert!(
+            (48.0..49.5).contains(&p.plate_velocity),
+            "plate {}",
+            p.plate_velocity
+        );
+        // Thrown from closer than the configured distance: release is the
+        // first frame, not a phantom stretch of flight.
+        let near = PitchingConfig {
+            actual_distance: 15.0,
+            simulated_distance: 46.0,
+        };
+        let p = pitch_plate(&seen, &near, &zone, air).unwrap();
+        assert!(
+            (p.release_velocity - 50.0).abs() < 0.01,
+            "release {}",
+            p.release_velocity
+        );
+        assert!(p.simulated_location.height < p.location.height);
     }
 
     #[test]

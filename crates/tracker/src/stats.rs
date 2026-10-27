@@ -23,6 +23,12 @@ fn max(values: impl Iterator<Item = f64>) -> Option<f64> {
     values.fold(None, |m, v| Some(m.map_or(v, |m: f64| m.max(v))))
 }
 
+/// The radar-gun number: release speed when the plate crossing was judged,
+/// else the speed where tracking began.
+fn pitch_speed(p: &HitRecord) -> f64 {
+    p.pitch.map_or(p.exit_velocity, |p| p.release_velocity)
+}
+
 fn mean(values: &[f64]) -> Option<f64> {
     (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
 }
@@ -50,7 +56,7 @@ pub fn session_stats(events: &[HitRecord]) -> SessionStats {
         .filter(|e| e.kind == EventKind::Pitch)
         .collect();
     let hits: Vec<&HitRecord> = events.iter().filter(|e| e.kind == EventKind::Hit).collect();
-    let pitch_speeds: Vec<f64> = pitches.iter().map(|p| p.exit_velocity).collect();
+    let pitch_speeds: Vec<f64> = pitches.iter().map(|p| pitch_speed(p)).collect();
     let exit_speeds: Vec<f64> = hits.iter().map(|h| h.exit_velocity).collect();
     SessionStats {
         pitches: pitches.len(),
@@ -97,7 +103,7 @@ fn pitching(events: &[HitRecord]) -> Vec<SummaryLine> {
         .iter()
         .filter(|e| e.kind == EventKind::Pitch)
         .collect();
-    let speeds: Vec<f64> = pitches.iter().map(|p| p.exit_velocity).collect();
+    let speeds: Vec<f64> = pitches.iter().map(|p| pitch_speed(p)).collect();
     let mut out = vec![line("PITCHES", pitches.len().to_string())];
     let judged: Vec<Call> = pitches
         .iter()
@@ -159,6 +165,7 @@ mod tests {
     fn pitch(speed: f64, call: Call) -> HitRecord {
         let mut e = event(EventKind::Pitch, speed);
         e.pitch = Some(PitchPlate {
+            release_velocity: speed,
             plate_velocity: speed - 2.0,
             location: Location {
                 side: 0.0,

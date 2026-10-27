@@ -140,6 +140,7 @@ pub enum Call {
 /// simulated crossing against the zone it was judged by.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PitchPlate {
+    pub release_velocity: f64,
     pub plate_velocity: f64,
     pub location: Location,
     pub simulated_location: Location,
@@ -578,6 +579,7 @@ impl DataDir {
         crate::rectify::Rectifier::from_json(&text, width, height).ok()
     }
 
+    /// Every event record saved in this directory.
     pub fn hits(&self) -> Result<Vec<HitRecord>, TrackerError> {
         let path = self.dir.join("hits.jsonl");
         if !path.exists() {
@@ -590,7 +592,11 @@ impl DataDir {
             if line.is_empty() {
                 continue;
             }
-            out.push(serde_json::from_str(line)?);
+            // A record in an older format is dropped rather than failing
+            // the whole file; reviewing the clip writes it again.
+            if let Ok(record) = serde_json::from_str(line) {
+                out.push(record);
+            }
         }
         Ok(out)
     }
