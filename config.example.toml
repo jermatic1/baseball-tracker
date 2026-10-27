@@ -40,8 +40,8 @@ settle = 0.15
 max_episode = 6.0
 keep_clips = true
 
-# Where the pitcher actually throws from, and the mound distance each pitch's
-# plate location is projected to.
+# Where the pitcher actually throws from, which release speed is read at,
+# and the mound distance each pitch's plate location is projected to.
 [pitching]
 actual_distance = 46
 simulated_distance = 46

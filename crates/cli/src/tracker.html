@@ -22,7 +22,7 @@
 <div id="detector" class="mono"></div>
 <div id="status"></div>
 <table id="events">
-  <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>carry ft</th><th>pitch</th><th>plate mph</th><th>location</th><th>simulated</th><th>call</th><th>contact</th><th>samples</th></tr></thead>
+  <thead><tr><th>clip</th><th>kind</th><th>type</th><th>mph</th><th>launch</th><th>spray</th><th>carry ft</th><th>pitch</th><th>release / plate mph</th><th>location</th><th>simulated</th><th>call</th><th>contact</th><th>samples</th></tr></thead>
   <tbody></tbody>
 </table>
 <h2>Users</h2>
@@ -88,7 +88,7 @@ connect("tracker page", {
     const loc = (l) => (l ? `${l.side.toFixed(0)}, ${l.height.toFixed(0)} in` : "-");
     [m.clip, r.kind, r.hit_type || "-", num(r.exit_velocity, 1), num(r.launch_angle, 1),
      num(r.spray_angle, 1), r.hit ? r.hit.carry.toFixed(0) : "-", num(r.pitch_velocity, 1),
-     r.pitch ? r.pitch.plate_velocity.toFixed(1) : "-", loc(r.pitch && r.pitch.location),
+     r.pitch ? `${r.pitch.release_velocity.toFixed(1)} / ${r.pitch.plate_velocity.toFixed(1)}` : "-", loc(r.pitch && r.pitch.location),
      loc(r.pitch && r.pitch.simulated_location), r.pitch ? r.pitch.call : "-",
      r.contact ? r.contact.kind : "-", r.samples].forEach((v) => cell(row, v));
     events.prepend(row);

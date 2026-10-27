@@ -89,7 +89,7 @@ function renderHit() {
     (h.contact ? "  contact: " + h.contact.kind + " at x " + h.contact.x.toFixed(1) +
       " y " + h.contact.y.toFixed(1) + " z " + h.contact.z.toFixed(1) + " ft\n" : "") +
     (h.hit ? "  carry: " + h.hit.carry.toFixed(0) + " ft, hang " + h.hit.hang_time.toFixed(1) + " s\n" : "") +
-    (h.pitch ? "  plate: " + h.pitch.plate_velocity.toFixed(1) + " mph at " + loc(h.pitch.location) +
+    (h.pitch ? "  release: " + h.pitch.release_velocity.toFixed(1) + " mph, plate: " + h.pitch.plate_velocity.toFixed(1) + " mph at " + loc(h.pitch.location) +
       ", simulated " + loc(h.pitch.simulated_location) + "\n" : "") +
     "  samples: " + h.samples + ", confident: " + h.confident
   ).join("\n");
