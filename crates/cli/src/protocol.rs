@@ -37,8 +37,12 @@ pub enum ClientMsg {
     Record {
         action: RecordAction,
     },
+    /// `corners` (frame pixels, five in outline order) goes with the
+    /// `corners` action.
     Calibrate {
         action: CalibrateAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corners: Option<Vec<[f64; 2]>>,
     },
     /// A new user, from the tracker's own page.
     AddUser {
@@ -94,6 +98,16 @@ pub enum CalibrateAction {
     Start,
     Apply,
     Stop,
+    /// Fit the pose to corners clicked by the user.
+    Corners,
+}
+
+/// Where a calibration fit's corners came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FitSource {
+    Auto,
+    Clicked,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -106,6 +120,7 @@ pub enum ServerMsg {
         record: HitRecord,
     },
     /// A plate fit while calibration mode is on; `applied` once saved.
+    /// `warnings` say why the fit looks wrong; it can still be applied.
     Calibration {
         found: bool,
         corners: Option<Vec<[f64; 2]>>,
@@ -113,6 +128,8 @@ pub enum ServerMsg {
         rms: Option<f64>,
         mount: Option<MountConfig>,
         applied: bool,
+        source: FitSource,
+        warnings: Vec<String>,
     },
     /// Everyone being tracked; sent after hello and whenever it changes.
     Users {
@@ -276,6 +293,11 @@ mod tests {
         });
         roundtrip(ClientMsg::Calibrate {
             action: CalibrateAction::Apply,
+            corners: None,
+        });
+        roundtrip(ClientMsg::Calibrate {
+            action: CalibrateAction::Corners,
+            corners: Some(vec![[1.0, 2.0]; 5]),
         });
     }
 
@@ -361,6 +383,8 @@ mod tests {
             rms: Some(0.4),
             mount: Some(mount),
             applied: false,
+            source: FitSource::Clicked,
+            warnings: vec!["plate is too small in the frame".into()],
         });
         roundtrip(ServerMsg::Error {
             request: Some("start_session".into()),

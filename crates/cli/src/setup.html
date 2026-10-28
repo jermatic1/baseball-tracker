@@ -9,13 +9,14 @@
 <nav><a href="/">Tracker</a><a href="/setup" class="here">Setup</a></nav>
 <h1>Setup</h1>
 <div id="view">
-  <img id="preview" alt="live preview" width="640">
+  <img id="preview" alt="live preview" width="640" draggable="false">
   <canvas id="boxes" width="640" height="400"></canvas>
   <canvas id="overlay" width="640" height="400"></canvas>
 </div>
 <div id="camera" class="mono">connecting</div>
 <div id="detector" class="mono"></div>
 <div id="calibration" class="mono"></div>
+<div id="warnings" class="mono"></div>
 <div class="row">
   <button data-set="exposure" data-delta="-100">Exposure −100 µs</button>
   <button data-set="exposure" data-delta="100">Exposure +100 µs</button>
@@ -31,9 +32,11 @@
   <button id="stop" disabled>Stop</button>
   <button id="calibrate">Calibrate</button>
   <button id="apply" hidden>Apply</button>
+  <button id="undo" hidden>Undo</button>
+  <button id="clear" hidden>Clear</button>
   <button id="cancel" hidden>Cancel</button>
 </div>
-<p>Calibrate with the plate clear and no ball on it. Detected plate in green, fitted pose in yellow. Capture pauses while calibrating.</p>
+<p>Calibrate with the plate clear and no ball on it. Click the five corners in order around the plate, any starting corner; drag a dot to move it, and <kbd>u</kbd> or Undo removes the last. A detected plate fills in the dots for you to confirm or adjust. Corners in green, fitted pose in yellow. Capture pauses while calibrating.</p>
 <div id="status"></div>
 <script src="/page.js"></script>
 <script>
@@ -42,8 +45,17 @@ const statusEl = document.getElementById("status");
 const cameraEl = document.getElementById("camera");
 const detectorEl = document.getElementById("detector");
 const calibEl = document.getElementById("calibration");
+const warningsEl = document.getElementById("warnings");
 let url = null;
 let controls = { exposure: 600, gain: 1600, ir_flood: 0, ir_dot: 0 };
+// Calibration: corners in frame pixels, whether the user has edited them,
+// and the fit currently shown for them.
+let calibrating = false;
+let dots = [];
+let touched = false;
+let shown = null;
+let dragging = -1;
+let sendTimer = null;
 
 connect("setup page", {
   open() {
@@ -81,14 +93,14 @@ connect("setup page", {
     }
   },
   calibration(m) {
-    drawPlate(m);
-    if (!m.found) {
-      calibEl.textContent = "calibrating: plate not found";
-    } else {
-      const p = m.mount;
-      calibEl.textContent = `${m.applied ? "applied" : "calibrating"}: rms ${m.rms.toFixed(2)} px, ` +
-        `${p.distance.toFixed(1)} ft from plate, ${p.height.toFixed(1)} ft high, lateral ${p.lateral.toFixed(1)} ft, yaw ${p.yaw.toFixed(1)}, pitch ${p.pitch.toFixed(1)}`;
+    if (m.source === "auto" && !m.applied) {
+      if (touched) return;
+      dots = m.found ? m.corners.map((p) => [p[0], p[1]]) : [];
+    } else if (m.source === "clicked" && !m.applied && dots.length < 5) {
+      return;
     }
+    shown = m;
+    showCalibration();
   },
   error(m) {
     statusEl.textContent = m.request ? `${m.request}: ${m.message}` : m.message;
@@ -109,27 +121,113 @@ function drawBoxes(list) {
   ctx.lineWidth = 2;
   list.forEach((b) => ctx.strokeRect(b[0], b[1], b[2], b[3]));
 }
+function showCalibration() {
+  const m = shown && shown.found ? shown : null;
+  drawPlate(m);
+  document.getElementById("apply").disabled = !m;
+  document.getElementById("undo").disabled = dots.length === 0;
+  document.getElementById("clear").disabled = dots.length === 0;
+  warningsEl.textContent = m ? m.warnings.join("; ") : "";
+  if (!m) {
+    calibEl.textContent = touched
+      ? `calibrating: ${dots.length} of 5 corners`
+      : "calibrating: plate not found; click its corners";
+    return;
+  }
+  const p = m.mount;
+  calibEl.textContent = `${m.applied ? "applied" : "calibrating"} (${m.source}): rms ${m.rms.toFixed(2)} px, ` +
+    `${p.distance.toFixed(1)} ft from plate, ${p.height.toFixed(1)} ft high, lateral ${p.lateral.toFixed(1)} ft, yaw ${p.yaw.toFixed(1)}, pitch ${p.pitch.toFixed(1)}`;
+}
 function drawPlate(m) {
   const ctx = fit(document.getElementById("overlay"));
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-  const poly = (pts, color) => {
-    if (!pts) return;
+  if (!calibrating) return;
+  const poly = (pts, color, closed) => {
+    if (!pts || pts.length < 2) return;
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
     pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
-    ctx.closePath();
+    if (closed) ctx.closePath();
     ctx.stroke();
   };
-  poly(m.corners, "#0f0");
-  poly(m.reprojected, "#ff0");
+  if (m) poly(m.reprojected, "#ff0", true);
+  poly(dots, "#0f0", dots.length === 5);
+  ctx.font = "bold 12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  dots.forEach((p, i) => {
+    ctx.fillStyle = "#0f0";
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], 7, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = "#000";
+    ctx.fillText(String(i + 1), p[0], p[1]);
+  });
 }
 function setCalibrating(on) {
+  ["apply", "undo", "clear", "cancel"].forEach((id) => (document.getElementById(id).hidden = !on));
   document.getElementById("calibrate").hidden = on;
-  document.getElementById("apply").hidden = !on;
-  document.getElementById("cancel").hidden = !on;
-  if (!on) fit(document.getElementById("overlay")).clearRect(0, 0, 640, 400);
+  if (on === calibrating) return;
+  calibrating = on;
+  dots = [];
+  touched = false;
+  shown = null;
+  dragging = -1;
+  clearTimeout(sendTimer);
+  warningsEl.textContent = "";
+  if (on) showCalibration();
+  else drawPlate(null);
 }
+// A user edit: forget the shown fit and, with all five corners, ask for a
+// new one once the edits pause.
+function editedDots() {
+  touched = true;
+  shown = null;
+  clearTimeout(sendTimer);
+  if (dots.length === 5) {
+    sendTimer = setTimeout(() => send({ type: "calibrate", action: "corners", corners: dots }), 150);
+  }
+  showCalibration();
+}
+function framePoint(e) {
+  const r = img.getBoundingClientRect();
+  const sx = (img.naturalWidth || 640) / r.width;
+  const sy = (img.naturalHeight || 400) / r.height;
+  return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy, reach: 10 * sx };
+}
+const view = document.getElementById("view");
+view.addEventListener("pointerdown", (e) => {
+  if (!calibrating) return;
+  const p = framePoint(e);
+  dragging = dots.findIndex((d) => Math.hypot(d[0] - p.x, d[1] - p.y) <= p.reach);
+  if (dragging < 0 && dots.length < 5) {
+    dots.push([p.x, p.y]);
+    editedDots();
+  }
+  if (dragging >= 0) view.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+view.addEventListener("pointermove", (e) => {
+  if (dragging < 0) return;
+  const p = framePoint(e);
+  dots[dragging] = [p.x, p.y];
+  editedDots();
+});
+view.addEventListener("pointerup", () => (dragging = -1));
+function undo() {
+  if (!calibrating || !dots.length) return;
+  dots.pop();
+  editedDots();
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "u" && !e.ctrlKey && !e.metaKey && !e.altKey) undo();
+});
+document.getElementById("undo").onclick = undo;
+document.getElementById("clear").onclick = () => {
+  dots = [];
+  editedDots();
+};
 document.querySelectorAll("[data-set]").forEach((b) => {
   b.onclick = () => {
     const key = b.dataset.set;
