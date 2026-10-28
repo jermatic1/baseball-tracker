@@ -92,7 +92,7 @@ tasks:
       - cargo run -p cli --quiet -- label {{.DATA}}
 
   train:
-    desc: Fine-tune a ball detector from labels and export ONNX
+    desc: Fine-tune a ball detector from labels and export ONNX (DATA may list several directories)
     env:
       UV_NO_PROJECT: "1"
     cmds:

@@ -111,12 +111,13 @@ impl Detector {
     }
 }
 
+/// A named class is a ball by name, so a trained model may list other classes
+/// in any order. An unnamed one is a ball as the only class or as COCO's 32.
 fn is_ball(class_id: usize, name: &str, n_classes: usize) -> bool {
-    name == "sports ball"
-        || name == "ball"
-        || name == "baseball"
-        || class_id == 32
-        || (n_classes == 1 && class_id == 0)
+    if !name.is_empty() {
+        return matches!(name, "ball" | "baseball" | "sports ball");
+    }
+    (n_classes == 1 && class_id == 0) || class_id == 32
 }
 
 fn median_depth(
@@ -200,4 +201,20 @@ fn available_provider() -> &'static str {
         }
     }
     "CPUExecutionProvider"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ball;
+
+    #[test]
+    fn picks_the_ball_class_by_name_or_position() {
+        assert!(is_ball(0, "ball", 1));
+        assert!(is_ball(1, "ball", 3));
+        assert!(!is_ball(0, "glove", 3));
+        assert!(is_ball(32, "sports ball", 80));
+        assert!(!is_ball(0, "person", 80));
+        assert!(is_ball(0, "", 1));
+        assert!(!is_ball(1, "", 2));
+    }
 }

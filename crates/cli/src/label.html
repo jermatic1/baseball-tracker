@@ -11,6 +11,8 @@ canvas { background: #000; max-width: 100%; cursor: crosshair; }
 button, input { margin-right: 6px; }
 .clip { display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 6px; }
 .clip.on { background: #345; color: #fff; }
+.clip.empty { color: #888; text-decoration: line-through; }
+#clipstate { color: #f66; }
 #zoom { position: fixed; right: 12px; top: 12px; border: 1px solid #444; background: #000; }
 #status { margin-top: 8px; }
 </style>
@@ -25,10 +27,12 @@ button, input { margin-right: 6px; }
     <span id="idx"></span>
     <label>box <input id="box" type="number" min="8" max="80" value="32"></label>
     <label>step <input id="step" type="number" min="1" max="8" value="2"></label>
+    <button id="emptyclip">no ball in clip (e)</button>
+    <span id="clipstate"></span>
   </div>
   <canvas id="frame"></canvas>
   <canvas id="zoom" width="180" height="180"></canvas>
-  <p>Click the ball. A gap of up to 12 frames is filled in a straight line. n = no ball. u = undo this frame.</p>
+  <p>Click the ball. A gap of up to 12 frames is filled in a straight line. n = no ball. u = undo this frame. e = no ball anywhere in this clip, then the next clip; e again on a marked clip unmarks it.</p>
   <div id="status"></div>
 </section>
 <script>
@@ -42,10 +46,12 @@ const idxEl = document.getElementById("idx");
 const statusEl = document.getElementById("status");
 const boxEl = document.getElementById("box");
 const stepEl = document.getElementById("step");
+const clipStateEl = document.getElementById("clipstate");
 let clipId = null;
 let n = 0;
 let i = 0;
 let labels = [];
+let emptyClips = new Set();
 let bitmap = null;
 function boxesFor(index) {
   return labels.filter((b) => b.clip === clipId && b.index === index);
@@ -84,11 +90,15 @@ async function show(index) {
 function paintStatus() {
   const balls = labels.filter((b) => b.kind === "ball" && !b.filled).length;
   const empty = labels.filter((b) => b.kind === "empty").length;
-  statusEl.textContent = balls + " ball clicks, " + empty + " empty frames";
+  statusEl.textContent =
+    balls + " ball clicks, " + empty + " empty frames, " + emptyClips.size + " empty clips";
+  clipStateEl.textContent = emptyClips.has(clipId) ? "clip marked empty" : "";
+  [...clipsEl.children].forEach((el) => el.classList.toggle("empty", emptyClips.has(el.dataset.id)));
 }
 async function loadLabels() {
   const body = await (await fetch("/api/labels")).json();
   labels = body.labels || [];
+  emptyClips = new Set(body.empty_clips || []);
   if (body.box) boxEl.value = String(body.box);
   paintStatus();
   draw();
@@ -106,6 +116,23 @@ async function save(kind, cx, cy) {
   }
   await loadLabels();
   await show(i + (Number(stepEl.value) || 1));
+}
+async function toggleEmptyClip() {
+  if (!clipId) return;
+  const empty = !emptyClips.has(clipId);
+  const r = await fetch("/api/empty_clips", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clip: clipId, empty }),
+  });
+  if (!r.ok) {
+    statusEl.textContent = r.status + " " + await r.text();
+    return;
+  }
+  await loadLabels();
+  if (!empty) return;
+  const next = [...clipsEl.children].find((el) => el.dataset.id === clipId)?.nextElementSibling;
+  if (next) next.click();
 }
 function imagePoint(ev) {
   const r = canvas.getBoundingClientRect();
@@ -129,11 +156,13 @@ canvas.onmousemove = (ev) => {
 };
 document.getElementById("prev").onclick = () => show(i - 1);
 document.getElementById("next").onclick = () => show(i + 1);
+document.getElementById("emptyclip").onclick = toggleEmptyClip;
 scrub.oninput = () => show(Number(scrub.value));
 boxEl.onchange = draw;
 window.onkeydown = (ev) => {
   if (ev.key === "n") save("empty", null, null);
   if (ev.key === "u") save("clear", null, null);
+  if (ev.key === "e") toggleEmptyClip();
   if (ev.key === "ArrowLeft") show(i - 1);
   if (ev.key === "ArrowRight") show(i + 1);
 };
@@ -151,6 +180,7 @@ async function boot() {
       n = (clip.meta && clip.meta.frames) || 0;
       scrub.max = String(Math.max(0, n - 1));
       [...clipsEl.children].forEach((el) => el.classList.toggle("on", el.dataset.id === id));
+      b.scrollIntoView({ block: "nearest" });
       await show(0);
     };
     clipsEl.appendChild(b);
