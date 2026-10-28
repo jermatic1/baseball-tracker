@@ -28,24 +28,32 @@ pub fn calibrate(path: PathBuf) -> Result<(), String> {
             None => std::thread::sleep(Duration::from_millis(5)),
         }
     };
-    let (corners, fit) = tracker::plate::calibrate_from_frame(
+    let image_path = session.dir.join("calibration.jpg");
+    let write_marked = |polygons: &[(&[(f64, f64)], u8)]| -> Result<(), String> {
+        let mut marked = frame.left.clone();
+        for &(pts, value) in polygons {
+            draw_polygon(&mut marked, frame.width, frame.height, pts, value);
+        }
+        let jpeg = crate::jpeg::encode_gray_jpeg(frame.width, frame.height, &marked)?;
+        std::fs::write(&image_path, jpeg).map_err(|e| e.to_string())
+    };
+    let Some((corners, fit)) = tracker::plate::calibrate_from_frame(
         &frame.left,
         frame.width,
         frame.height,
         &session.config,
-    )
-    .ok_or("plate not found: clear the plate, keep the ball off it, and retry")?;
-    let mut marked = frame.left.clone();
-    draw_polygon(&mut marked, frame.width, frame.height, &corners.px, 255);
-    draw_polygon(
-        &mut marked,
-        frame.width,
-        frame.height,
-        &fit.reprojected,
-        160,
-    );
-    let jpeg = crate::jpeg::encode_gray_jpeg(frame.width, frame.height, &marked)?;
-    std::fs::write(session.dir.join("calibration.jpg"), jpeg).map_err(|e| e.to_string())?;
+    ) else {
+        let candidates = tracker::plate::find_plates(&frame.left, frame.width, frame.height);
+        let outlines: Vec<(&[(f64, f64)], u8)> =
+            candidates.iter().map(|c| (&c.px[..], 255)).collect();
+        write_marked(&outlines)?;
+        return Err(format!(
+            "plate not found among {} candidates; wrote them to {}",
+            candidates.len(),
+            image_path.display()
+        ));
+    };
+    write_marked(&[(&corners.px, 255), (&fit.reprojected, 160)])?;
     session.config.mount = fit.mount.clone();
     session
         .config

@@ -46,16 +46,38 @@ pub struct PoseFit {
 const MIN_AREA: usize = 150;
 const MAX_AREA: usize = 40_000;
 
-/// Find the plate as the best bright pentagon in the frame.
+/// The largest bright pentagon in the frame.
 pub fn find_plate(gray: &[u8], w: u32, h: u32) -> Option<PlateCorners> {
+    find_plates(gray, w, h).into_iter().next()
+}
+
+/// Every bright pentagon in the frame, largest first. Bright door panels
+/// and mats make pentagons too, so the pose fit decides which is the plate.
+/// A shaded plate can sit below the frame's brightest tenth, so blobs are
+/// also cut at lower thresholds; near-duplicates are dropped.
+pub fn find_plates(gray: &[u8], w: u32, h: u32) -> Vec<PlateCorners> {
     let (w, h) = (w as usize, h as usize);
     if gray.len() < w * h || w < 16 || h < 16 {
-        return None;
+        return Vec::new();
     }
-    let threshold = bright_threshold(gray);
-    let mask: Vec<bool> = gray.iter().map(|&v| v >= threshold).collect();
+    let top = bright_threshold(gray);
+    let mut found: Vec<(usize, PlateCorners)> = Vec::new();
+    for threshold in [top, top - top / 4, top / 2] {
+        for (area, c) in pentagons_at(gray, w, h, threshold) {
+            if !found.iter().any(|(_, f)| same_outline(f, &c)) {
+                found.push((area, c));
+            }
+        }
+    }
+    found.sort_by_key(|f| std::cmp::Reverse(f.0));
+    found.into_iter().map(|(_, c)| c).collect()
+}
+
+/// Pentagons among the blobs at or above `threshold`, with their areas.
+fn pentagons_at(gray: &[u8], w: usize, h: usize, threshold: u8) -> Vec<(usize, PlateCorners)> {
+    let mask: Vec<bool> = gray[..w * h].iter().map(|&v| v >= threshold).collect();
     let mut seen = vec![false; w * h];
-    let mut best: Option<(usize, PlateCorners)> = None;
+    let mut found = Vec::new();
     for start in 0..w * h {
         if !mask[start] || seen[start] {
             continue;
@@ -83,17 +105,21 @@ pub fn find_plate(gray: &[u8], w: u32, h: u32) -> Option<PlateCorners> {
             continue;
         }
         let px = refine_corners(&boundary, &poly);
-        if best.as_ref().is_none_or(|(area, _)| pixels.len() > *area) {
-            best = Some((pixels.len(), PlateCorners { px }));
-        }
+        found.push((pixels.len(), PlateCorners { px }));
     }
-    best.map(|(_, c)| c)
+    found
+}
+
+/// Whether every corner of `a` has a corner of `b` within a few pixels.
+fn same_outline(a: &PlateCorners, b: &PlateCorners) -> bool {
+    a.px.iter().all(|&p| b.px.iter().any(|&q| dist(p, q) < 3.0))
 }
 
 /// Fit the mount parameters to the detected corners, starting from a guess
-/// (the current config). Every assignment of outline corners to plate
-/// corners is tried (five rotations, both directions, both depth-sign
-/// conventions); the best fit wins.
+/// (the current config) and from its mirror image on the other side of the
+/// plate, since a wrong-side guess settles in a poor local minimum. Every
+/// assignment of outline corners to plate corners is tried (five rotations,
+/// both directions); the best fit wins.
 pub fn solve_pose(
     corners: &PlateCorners,
     intr: &Intrinsics,
@@ -111,7 +137,19 @@ pub fn solve_pose(
         rev[1..].reverse();
         assignments.push(rev);
     }
-    for px in assignments {
+    let starts = [1.0, -1.0].map(|side| {
+        [
+            metres(initial.distance),
+            metres(initial.height),
+            side * metres(initial.lateral),
+            side * initial.yaw,
+            initial.pitch,
+        ]
+    });
+    for (px, start) in assignments
+        .iter()
+        .flat_map(|px| starts.iter().map(move |s| (px, *s)))
+    {
         let cost = |p: &[f64; 5]| -> f64 {
             let mount = mount_from(p);
             let mut sum = 0.0;
@@ -125,13 +163,6 @@ pub fn solve_pose(
             }
             sum
         };
-        let start = [
-            metres(initial.distance),
-            metres(initial.height),
-            metres(initial.lateral),
-            initial.yaw,
-            initial.pitch,
-        ];
         let (p, sum) = nelder_mead(cost, start, [0.3, 0.2, 0.3, 10.0, 10.0]);
         let rms = (sum / 5.0).sqrt();
         if best.as_ref().is_none_or(|b| rms < b.rms_px) {
@@ -153,16 +184,108 @@ pub fn solve_pose(
 }
 
 /// Detect the plate in a frame and fit the mount, starting from the config.
+/// Of every pentagon in the frame, the one that fits the pose best is the
+/// plate, if it fits well enough with the camera above the ground.
 pub fn calibrate_from_frame(
     gray: &[u8],
     w: u32,
     h: u32,
     cfg: &Config,
 ) -> Option<(PlateCorners, PoseFit)> {
-    let corners = find_plate(gray, w, h)?;
     let intr = Intrinsics::from_fov(w, h, 80.0, 55.0);
-    let fit = solve_pose(&corners, &intr, &cfg.mount)?;
-    (fit.rms_px <= MAX_RMS_PX).then_some((corners, fit))
+    find_plates(gray, w, h)
+        .into_iter()
+        .filter_map(|corners| solve_pose(&corners, &intr, &cfg.mount).map(|fit| (corners, fit)))
+        .filter(|(_, fit)| fit.rms_px <= MAX_RMS_PX && fit.mount.height > 0.0)
+        .min_by(|a, b| a.1.rms_px.total_cmp(&b.1.rms_px))
+}
+
+/// Shortest plate edge on screen, in pixels, that clicks can place well.
+const MIN_EDGE_PX: f64 = 15.0;
+/// Median stereo-versus-fit depth disagreement tolerated, as a fraction.
+const MAX_DEPTH_DISAGREEMENT: f64 = 0.15;
+
+/// Reasons a fit looks wrong, for the user to judge before applying it.
+/// `depth` gives the stereo depth along the optical axis, in metres, at a
+/// pixel; without it the depth check is skipped.
+pub fn check_fit(
+    fit: &PoseFit,
+    corners: &PlateCorners,
+    intr: &Intrinsics,
+    depth: Option<&dyn Fn((f64, f64)) -> Option<f64>>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if fit.rms_px > MAX_RMS_PX {
+        warnings.push(format!(
+            "corners do not fit a plate (rms {:.1} px)",
+            fit.rms_px
+        ));
+    }
+    let m = &fit.mount;
+    let mut pose = Vec::new();
+    if m.height < 0.0 {
+        pose.push("camera below ground".to_string());
+    } else if !(1.0..=12.0).contains(&m.height) {
+        pose.push(format!("height {:.1} ft", m.height));
+    }
+    if !(2.0..=40.0).contains(&m.distance) {
+        pose.push(format!("distance {:.1} ft", m.distance));
+    }
+    if !pose.is_empty() {
+        warnings.push(format!("camera pose is implausible: {}", pose.join(", ")));
+    }
+    let longest = (0..5)
+        .map(|i| dist(corners.px[i], corners.px[(i + 1) % 5]))
+        .fold(0.0, f64::max);
+    if longest < MIN_EDGE_PX {
+        warnings.push("plate is too small in the frame".into());
+    }
+    if let Some(depth) = depth {
+        let mut errors: Vec<f64> = corners
+            .px
+            .iter()
+            .filter_map(|&px| {
+                // The clicked corner's plate corner is the nearest reprojected one.
+                let i = (0..5).min_by(|&a, &b| {
+                    dist(fit.reprojected[a], px).total_cmp(&dist(fit.reprojected[b], px))
+                })?;
+                let (_, _, expected) = project(PLATE_FIELD[i], intr, m)?;
+                let measured = depth(px)?;
+                (expected > 0.0).then(|| (measured - expected).abs() / expected)
+            })
+            .collect();
+        if !errors.is_empty() {
+            errors.sort_by(f64::total_cmp);
+            let median = errors[errors.len() / 2];
+            if median > MAX_DEPTH_DISAGREEMENT {
+                warnings.push(format!(
+                    "stereo depth disagrees with the fit by {:.0}%",
+                    median * 100.0
+                ));
+            }
+        }
+    }
+    warnings
+}
+
+/// Median of the non-zero millimetre depths in a 5x5 window around a pixel,
+/// in metres.
+pub fn window_depth_m(depth_mm: &[u16], w: u32, h: u32, (x, y): (f64, f64)) -> Option<f64> {
+    if depth_mm.len() < (w * h) as usize || x < 0.0 || y < 0.0 {
+        return None;
+    }
+    let (cx, cy) = (x as i64, y as i64);
+    let mut vals: Vec<u16> = (cy - 2..=cy + 2)
+        .flat_map(|yy| (cx - 2..=cx + 2).map(move |xx| (xx, yy)))
+        .filter(|&(xx, yy)| xx >= 0 && yy >= 0 && xx < w as i64 && yy < h as i64)
+        .map(|(xx, yy)| depth_mm[(yy * w as i64 + xx) as usize])
+        .filter(|&d| d > 0)
+        .collect();
+    if vals.is_empty() {
+        return None;
+    }
+    vals.sort_unstable();
+    Some(vals[vals.len() / 2] as f64 / 1000.0)
 }
 
 /// Metres and degrees from the optimiser into the feet of the config.
@@ -553,5 +676,112 @@ mod tests {
         }
         let cfg = Config::example();
         assert!(calibrate_from_frame(&img, 640, 400, &cfg).is_none());
+    }
+
+    /// A plausible side mount, aimed at the plate.
+    fn field_rig() -> MountConfig {
+        MountConfig {
+            distance: 8.0,
+            height: 4.0,
+            lateral: -5.0,
+            pitch: 0.0,
+            yaw: 0.0,
+        }
+    }
+
+    fn fit_rendered(mount: &MountConfig) -> (Intrinsics, PlateCorners, PoseFit) {
+        let intr = Intrinsics::from_fov(640, 400, 80.0, 55.0);
+        let (_, px) = render(mount, &intr);
+        let corners = PlateCorners { px };
+        let fit = solve_pose(&corners, &intr, mount).expect("pose");
+        (intr, corners, fit)
+    }
+
+    #[test]
+    fn good_fit_has_no_warnings() {
+        let truth = field_rig();
+        let (intr, corners, fit) = fit_rendered(&truth);
+        let depth = |px: (f64, f64)| {
+            let i = corners.px.iter().position(|&c| c == px)?;
+            project(PLATE_FIELD[i], &intr, &truth).map(|p| p.2)
+        };
+        let warnings = check_fit(&fit, &corners, &intr, Some(&depth));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(check_fit(&fit, &corners, &intr, None).is_empty());
+    }
+
+    #[test]
+    fn stereo_depth_disagreement_is_reported() {
+        let truth = field_rig();
+        let (intr, corners, fit) = fit_rendered(&truth);
+        let depth = |px: (f64, f64)| {
+            let i = corners.px.iter().position(|&c| c == px)?;
+            project(PLATE_FIELD[i], &intr, &truth).map(|p| p.2 * 1.3)
+        };
+        let warnings = check_fit(&fit, &corners, &intr, Some(&depth));
+        assert_eq!(warnings, ["stereo depth disagrees with the fit by 30%"]);
+        let none = |_: (f64, f64)| None;
+        assert!(check_fit(&fit, &corners, &intr, Some(&none)).is_empty());
+    }
+
+    #[test]
+    fn misplaced_corner_does_not_fit() {
+        let truth = field_rig();
+        let intr = Intrinsics::from_fov(640, 400, 80.0, 55.0);
+        let (_, mut px) = render(&truth, &intr);
+        px[2].0 += 25.0;
+        let corners = PlateCorners { px };
+        let fit = solve_pose(&corners, &intr, &truth).expect("pose");
+        let warnings = check_fit(&fit, &corners, &intr, None);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.starts_with("corners do not fit a plate")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn implausible_pose_is_reported() {
+        let (intr, corners, mut fit) = fit_rendered(&field_rig());
+        fit.mount.height = 0.5;
+        fit.mount.distance = 50.0;
+        let warnings = check_fit(&fit, &corners, &intr, None);
+        assert_eq!(
+            warnings,
+            ["camera pose is implausible: height 0.5 ft, distance 50.0 ft"]
+        );
+        fit.mount.height = -1.0;
+        fit.mount.distance = 8.0;
+        let warnings = check_fit(&fit, &corners, &intr, None);
+        assert_eq!(
+            warnings,
+            ["camera pose is implausible: camera below ground"]
+        );
+    }
+
+    #[test]
+    fn tiny_plate_is_flagged() {
+        let (intr, mut corners, fit) = fit_rendered(&field_rig());
+        let (cx, cy) = corners.px[0];
+        for p in corners.px.iter_mut() {
+            *p = (cx + (p.0 - cx) * 0.1, cy + (p.1 - cy) * 0.1);
+        }
+        let warnings = check_fit(&fit, &corners, &intr, None);
+        assert!(
+            warnings.contains(&"plate is too small in the frame".to_string()),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn window_depth_ignores_holes() {
+        let (w, h) = (10u32, 10u32);
+        let mut depth = vec![0u16; 100];
+        depth[5 * 10 + 5] = 2000;
+        depth[4 * 10 + 4] = 2100;
+        depth[6 * 10 + 6] = 1900;
+        assert_eq!(window_depth_m(&depth, w, h, (5.2, 5.7)), Some(2.0));
+        assert_eq!(window_depth_m(&depth, w, h, (0.0, 0.0)), None);
     }
 }
