@@ -566,7 +566,7 @@ mod tests {
     fn ground_ball_bounce() {
         let mut s = Synth::new(80);
         s.rest(TEE, 0..30, 1.0);
-        let vel = launch_velocity(45.0, -10.0, 80.0);
+        let vel = launch_velocity(45.0, -10.0, -80.0);
         // Time to the floor from the tee height: 0 = y0 + vy t - g t^2 / 2.
         let g = 9.80665;
         let t_floor = (vel[1] + (vel[1] * vel[1] + 2.0 * g * TEE[1]).sqrt()) / g;
