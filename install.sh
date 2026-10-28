@@ -1,6 +1,7 @@
 #!/bin/sh
 # Install the tracker on a Jetson: system libraries including the JetPack GPU runtime,
-# the OAK udev rule, and the latest bundle from GitHub. TRACKER_INSTALL sets the directory.
+# the OAK udev rule, WiFi power saving off, and the latest bundle from GitHub.
+# TRACKER_INSTALL sets the directory.
 set -eu
 
 main() {
@@ -40,12 +41,27 @@ main() {
     sudo udevadm control --reload-rules && sudo udevadm trigger
   fi
 
-  mkdir -p "$dest/sessions" "$dest/models"
+  # WiFi power saving stalls ssh and the pages for up to a second at a time.
+  # The setting is applied to the live interfaces rather than by restarting
+  # NetworkManager, which would drop an ssh session running this install.
+  powersave=/etc/NetworkManager/conf.d/wifi-powersave-off.conf
+  if [ -d /etc/NetworkManager/conf.d ] && [ ! -e "$powersave" ]; then
+    printf '[connection]\nwifi.powersave = 2\n' | sudo tee "$powersave" >/dev/null
+    if command -v iw >/dev/null; then
+      for dev in /sys/class/net/*/wireless; do
+        [ -d "$dev" ] || continue
+        dev=${dev%/wireless}
+        sudo iw dev "${dev##*/}" set power_save off || true
+      done
+    fi
+  fi
+
+  mkdir -p "$dest/data" "$dest/models"
   curl -fsSL "https://github.com/$repo/releases/download/latest/$asset" | tar -xzf - -C "$dest"
   chmod +x "$dest/tracker"
   echo "installed $(cat "$dest/VERSION") in $dest"
   echo "copy models/ball.onnx into $dest/models, plug the OAK into a USB 3 port, then:"
-  echo "  cd $dest && ./tracker watch sessions/<name>"
+  echo "  cd $dest && ./tracker watch data"
 }
 
 main "$@"
