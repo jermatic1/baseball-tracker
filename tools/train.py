@@ -17,7 +17,7 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 400
 CLASSES = ["ball"]
 EMPTY_CLIP_STRIDE = 10
-EMPTY_CLIP_CAP = 4
+EMPTY_CLIP_CAP = 2
 
 
 def mark_class(mark):
