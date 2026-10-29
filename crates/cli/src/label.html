@@ -15,11 +15,30 @@ button, input { margin-right: 6px; }
 #clipstate { color: #f66; }
 #zoom { position: fixed; right: 12px; top: 12px; border: 1px solid #444; background: #000; }
 #status { margin-top: 8px; }
+.track { display: flex; align-items: center; gap: 10px; padding: 6px; border: 1px solid #333; margin-bottom: 6px; }
+.track.on { border-color: #6af; background: #1a2430; }
+.track.ball { opacity: 0.5; border-left: 4px solid #0f0; }
+.track.reject { opacity: 0.35; border-left: 4px solid #f66; }
+.track canvas { cursor: default; }
+.track .info { min-width: 200px; }
+.track .kind { font-weight: bold; }
+.moving { color: #6f6; } .resting { color: #fc6; } .stray { color: #aaa; }
+.hidden { display: none; }
 </style>
 </head>
 <body>
 <nav id="clips"></nav>
 <section id="main">
+  <div>
+    <button id="mode">frames view (t)</button>
+    <button id="emptyclip">no ball in clip (e)</button>
+    <span id="clipstate"></span>
+  </div>
+  <div id="tracksview">
+    <p>Each row is a track the detector linked. a = accept as ball, r = reject, A = accept every moving track in the clip. j / k = next / previous track, n / p = next / previous clip. The next clip opens when every track here is reviewed. t = per-frame view at this track.</p>
+    <div id="tracks"></div>
+  </div>
+  <div id="frameview" class="hidden">
   <div>
     <button id="prev">←</button>
     <button id="next">→</button>
@@ -27,12 +46,11 @@ button, input { margin-right: 6px; }
     <span id="idx"></span>
     <label>box <input id="box" type="number" min="8" max="80" value="32"></label>
     <label>step <input id="step" type="number" min="1" max="8" value="2"></label>
-    <button id="emptyclip">no ball in clip (e)</button>
-    <span id="clipstate"></span>
   </div>
   <canvas id="frame"></canvas>
   <canvas id="zoom" width="180" height="180"></canvas>
-  <p>Click the ball. A gap of up to 12 frames is filled in a straight line. n = no ball. u = undo this frame. e = no ball anywhere in this clip, then the next clip; e again on a marked clip unmarks it.</p>
+  <p>Click the ball. A gap of up to 12 frames is filled in a straight line. n = no ball. u = undo this frame. e = no ball anywhere in this clip, then the next clip; e again on a marked clip unmarks it. t = back to tracks.</p>
+  </div>
   <div id="status"></div>
 </section>
 <script>
@@ -53,6 +71,14 @@ let i = 0;
 let labels = [];
 let emptyClips = new Set();
 let bitmap = null;
+let mode = "tracks";
+let tracks = [];
+let sel = 0;
+let thumbs = new Map();
+const tracksEl = document.getElementById("tracks");
+const modeEl = document.getElementById("mode");
+const THUMB = 64;
+const CROP = 56;
 function boxesFor(index) {
   return labels.filter((b) => b.clip === clipId && b.index === index);
 }
@@ -130,9 +156,112 @@ async function toggleEmptyClip() {
     return;
   }
   await loadLabels();
-  if (!empty) return;
-  const next = [...clipsEl.children].find((el) => el.dataset.id === clipId)?.nextElementSibling;
+  if (empty) stepClip(1);
+}
+function stepClip(d) {
+  const el = [...clipsEl.children].find((e) => e.dataset.id === clipId);
+  const next = d > 0 ? el?.nextElementSibling : el?.previousElementSibling;
   if (next) next.click();
+}
+function frameBitmap(index) {
+  if (!thumbs.has(index)) {
+    const id = clipId;
+    thumbs.set(index, fetch("/api/clips/" + id + "/frame/" + index)
+      .then((r) => (r.ok ? r.blob() : Promise.reject(r.status)))
+      .then((b) => createImageBitmap(b)));
+  }
+  return thumbs.get(index);
+}
+function samplePoints(points) {
+  const k = Math.min(5, points.length);
+  if (k === 1) return [points[0]];
+  return Array.from({ length: k }, (_, j) => points[Math.round(j * (points.length - 1) / (k - 1))]);
+}
+function drawThumbs(canvasEl, points) {
+  const cx = canvasEl.getContext("2d");
+  samplePoints(points).forEach((p, j) => {
+    const id = clipId;
+    frameBitmap(p.index).then((bmp) => {
+      if (id !== clipId) return;
+      cx.drawImage(bmp, p.cx - CROP / 2, p.cy - CROP / 2, CROP, CROP, j * THUMB, 0, THUMB, THUMB);
+      cx.strokeStyle = "#0f0";
+      cx.strokeRect(j * THUMB + THUMB / 2 - 9, THUMB / 2 - 9, 18, 18);
+    }).catch(() => {});
+  });
+}
+function renderTracks() {
+  tracksEl.replaceChildren();
+  if (!tracks.length) tracksEl.textContent = "No detections in this clip. e marks it empty; t opens the frames.";
+  tracks.forEach((t, k) => {
+    const row = document.createElement("div");
+    row.className = "track" + (t.verdict ? " " + t.verdict : "") + (k === sel ? " on" : "");
+    const strip = document.createElement("canvas");
+    strip.width = THUMB * Math.min(5, t.points.length);
+    strip.height = THUMB;
+    const info = document.createElement("div");
+    info.className = "info";
+    const kind = document.createElement("span");
+    kind.className = "kind " + t.kind;
+    kind.textContent = t.kind;
+    info.append(kind, " frames " + t.start + "-" + t.end + " (" + t.points.length + "), conf " +
+      t.conf.toFixed(2) + (t.verdict ? ", " + (t.verdict === "ball" ? "accepted" : "rejected") : ""));
+    const accept = document.createElement("button");
+    accept.textContent = "ball (a)";
+    accept.onclick = () => { sel = k; review([t], "ball"); };
+    const reject = document.createElement("button");
+    reject.textContent = "reject (r)";
+    reject.onclick = () => { sel = k; review([t], "reject"); };
+    row.onclick = (ev) => { if (ev.target.tagName !== "BUTTON") selectTrack(k); };
+    row.append(strip, info, accept, reject);
+    tracksEl.appendChild(row);
+    drawThumbs(strip, t.points);
+  });
+}
+function selectTrack(k) {
+  if (!tracks.length) return;
+  sel = Math.max(0, Math.min(tracks.length - 1, k));
+  [...tracksEl.children].forEach((el, j) => el.classList.toggle("on", j === sel));
+  tracksEl.children[sel]?.scrollIntoView({ block: "nearest" });
+}
+async function loadTracks() {
+  const id = clipId;
+  const body = await (await fetch("/api/clips/" + id + "/tracks")).json();
+  if (id !== clipId) return;
+  tracks = body.tracks || [];
+  sel = Math.max(0, tracks.findIndex((t) => !t.verdict));
+  renderTracks();
+  selectTrack(sel);
+}
+async function review(list, verdict) {
+  for (const t of list) {
+    const r = await fetch("/api/tracks/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clip: clipId, verdict, points: t.points }),
+    });
+    if (!r.ok) {
+      statusEl.textContent = r.status + " " + await r.text();
+      return;
+    }
+    t.verdict = verdict;
+  }
+  await loadLabels();
+  if (tracks.length && tracks.every((t) => t.verdict)) {
+    stepClip(1);
+    return;
+  }
+  const next = tracks.findIndex((t, k) => k > sel && !t.verdict);
+  const keep = sel;
+  renderTracks();
+  selectTrack(next >= 0 ? next : keep);
+}
+function setMode(m) {
+  mode = m;
+  document.getElementById("tracksview").classList.toggle("hidden", m !== "tracks");
+  document.getElementById("frameview").classList.toggle("hidden", m !== "frames");
+  modeEl.textContent = m === "tracks" ? "frames view (t)" : "tracks view (t)";
+  if (m === "frames") show(tracks[sel] ? tracks[sel].start : i);
+  else draw();
 }
 function imagePoint(ev) {
   const r = canvas.getBoundingClientRect();
@@ -157,12 +286,26 @@ canvas.onmousemove = (ev) => {
 document.getElementById("prev").onclick = () => show(i - 1);
 document.getElementById("next").onclick = () => show(i + 1);
 document.getElementById("emptyclip").onclick = toggleEmptyClip;
+modeEl.onclick = () => setMode(mode === "tracks" ? "frames" : "tracks");
 scrub.oninput = () => show(Number(scrub.value));
 boxEl.onchange = draw;
 window.onkeydown = (ev) => {
+  if (ev.target.type === "number" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (ev.key === "e") toggleEmptyClip();
+  if (ev.key === "t") setMode(mode === "tracks" ? "frames" : "tracks");
+  if (mode === "tracks") {
+    const t = tracks[sel];
+    if (ev.key === "j") selectTrack(sel + 1);
+    if (ev.key === "k") selectTrack(sel - 1);
+    if (ev.key === "n") stepClip(1);
+    if (ev.key === "p") stepClip(-1);
+    if (ev.key === "a" && t) review([t], "ball");
+    if (ev.key === "r" && t) review([t], "reject");
+    if (ev.key === "A") review(tracks.filter((x) => x.kind === "moving" && x.verdict !== "ball"), "ball");
+    return;
+  }
   if (ev.key === "n") save("empty", null, null);
   if (ev.key === "u") save("clear", null, null);
-  if (ev.key === "e") toggleEmptyClip();
   if (ev.key === "ArrowLeft") show(i - 1);
   if (ev.key === "ArrowRight") show(i + 1);
 };
@@ -176,12 +319,15 @@ async function boot() {
     b.textContent = id;
     b.onclick = async () => {
       clipId = id;
+      thumbs = new Map();
+      tracks = [];
       const clip = await (await fetch("/api/clips/" + id)).json();
       n = (clip.meta && clip.meta.frames) || 0;
       scrub.max = String(Math.max(0, n - 1));
       [...clipsEl.children].forEach((el) => el.classList.toggle("on", el.dataset.id === id));
       b.scrollIntoView({ block: "nearest" });
-      await show(0);
+      await loadTracks();
+      await show(mode === "frames" && tracks[sel] ? tracks[sel].start : 0);
     };
     clipsEl.appendChild(b);
   }

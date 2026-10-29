@@ -11,6 +11,7 @@ mod history;
 mod hub;
 mod jpeg;
 mod label;
+mod label_tracks;
 mod mock;
 mod protocol;
 #[cfg(feature = "detect")]
