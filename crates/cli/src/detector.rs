@@ -2,7 +2,10 @@
 //! stereo depth measured at each box. Shared by the offline `detect` command
 //! and the live watcher.
 
+use std::path::{Path, PathBuf};
+
 use image::{DynamicImage, GrayImage};
+use sha1::{Digest, Sha1};
 use tracker::{BallBox, Eye, Rectifier, StereoCalib};
 use ultralytics_inference::{InferenceConfig, Quantization, YOLOModel};
 
@@ -29,7 +32,19 @@ impl Detector {
         let provider = available_provider();
         ultralytics_inference::logging::set_verbose(false);
         let config = InferenceConfig::default().with_quantize(Quantization::Fp16);
+        let cache = engine_cache_dir(Path::new(model));
+        let hash = model_hash(Path::new(model))?;
+        if clear_stale_cache(&cache, &hash)? {
+            println!(
+                "cleared TensorRT engine cache {}: model changed",
+                cache.display()
+            );
+        }
         let yolo = YOLOModel::load_with_config(model, config).map_err(|e| e.to_string())?;
+        if cache.is_dir() {
+            std::fs::write(cache.join(MODEL_MARKER), &hash)
+                .map_err(|e| format!("{}: {e}", cache.display()))?;
+        }
         println!("detector {model} on {provider}");
         Ok(Self { yolo, provider })
     }
@@ -149,6 +164,43 @@ fn median_depth(
     Some(vals[vals.len() / 2] as f64 / 1000.0)
 }
 
+/// Holds the SHA-1 of the model file the cached TensorRT engine was built from.
+const MODEL_MARKER: &str = "model.sha1";
+
+/// Where the model loader keeps the TensorRT engine for an fp16 YOLO model,
+/// mirroring `YOLOModel::trt_cache_dir`.
+fn engine_cache_dir(model: &Path) -> PathBuf {
+    let stem = model
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model");
+    let parent = model.parent().unwrap_or_else(|| Path::new("."));
+    parent.join(".trt_cache").join(format!("{stem}_fp16"))
+}
+
+fn model_hash(model: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(model).map_err(|e| format!("{}: {e}", model.display()))?;
+    Ok(Sha1::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// TensorRT names engines by graph structure, so retrained weights with the
+/// same architecture would reuse the old engine. Delete the cache unless its
+/// marker matches `hash`; returns whether it was deleted.
+fn clear_stale_cache(cache: &Path, hash: &str) -> Result<bool, String> {
+    if !cache.is_dir() {
+        return Ok(false);
+    }
+    let marker = std::fs::read_to_string(cache.join(MODEL_MARKER)).unwrap_or_default();
+    if marker.trim() == hash {
+        return Ok(false);
+    }
+    std::fs::remove_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
+    Ok(true)
+}
+
 /// Open the ONNX Runtime shipped next to the executable, unless `ORT_DYLIB_PATH`
 /// names one.
 fn load_runtime() -> Result<(), String> {
@@ -205,7 +257,7 @@ fn available_provider() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::is_ball;
+    use super::{clear_stale_cache, is_ball, MODEL_MARKER};
 
     #[test]
     fn picks_the_ball_class_by_name_or_position() {
@@ -216,5 +268,26 @@ mod tests {
         assert!(!is_ball(0, "person", 80));
         assert!(is_ball(0, "", 1));
         assert!(!is_ball(1, "", 2));
+    }
+
+    #[test]
+    fn clears_the_engine_cache_only_when_the_model_changed() {
+        let root = std::env::temp_dir().join(format!("tracker-trt-{}", std::process::id()));
+        let cache = root.join(".trt_cache").join("ball_fp16");
+
+        assert!(!clear_stale_cache(&cache, "abc").unwrap());
+
+        std::fs::create_dir_all(&cache).unwrap();
+        assert!(clear_stale_cache(&cache, "abc").unwrap());
+        assert!(!cache.exists());
+
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join(MODEL_MARKER), "abc").unwrap();
+        assert!(!clear_stale_cache(&cache, "abc").unwrap());
+        assert!(cache.exists());
+        assert!(clear_stale_cache(&cache, "def").unwrap());
+        assert!(!cache.exists());
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -59,7 +59,7 @@ task release
 
 The first build compiles the camera library from source and takes a while. The result is `dist/release/tracker`, one executable for everything.
 
-Detection runs on the GPU through ONNX Runtime. The build installs the platform's ONNX Runtime package with `uv`, Microsoft's on x86_64 and the JetPack 7.2 build from the [Ultralytics Jetson guide](https://docs.ultralytics.com/guides/nvidia-jetson/) on the Jetson, and places the libraries next to the executable. `ORT_DYLIB_PATH` points the tracker at a different runtime. Without a GPU the detector runs on the CPU.
+Detection runs on the GPU through ONNX Runtime. The build installs the platform's ONNX Runtime package with `uv`, Microsoft's on x86_64 and the JetPack 7.2 build from the [Ultralytics Jetson guide](https://docs.ultralytics.com/guides/nvidia-jetson/) on the Jetson, and places the libraries next to the executable. `ORT_DYLIB_PATH` points the tracker at a different runtime. Without a GPU the detector runs on the CPU. The TensorRT engine cache next to the model is rebuilt when the model file changes.
 
 ### Camera access
 
