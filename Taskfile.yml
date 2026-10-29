@@ -91,6 +91,38 @@ tasks:
     cmds:
       - cargo run -p cli --quiet -- label {{.DATA}}
 
+  pull:
+    desc: Copy clips not yet pulled from the Jetson (JETSON=[user@]host) into DATA (default sessions/jetson)
+    vars:
+      DEST: '{{if eq .DATA "data"}}sessions/jetson{{else}}{{.DATA}}{{end}}'
+      TRACKER_DIR: '{{.TRACKER_DIR | default "~/tracker"}}'
+    silent: true
+    preconditions:
+      - sh: test -n "{{.JETSON}}"
+        msg: "usage: task pull JETSON=[user@]host [DATA=sessions/jetson] [TRACKER_DIR=~/tracker]"
+    cmds:
+      - |
+        set -eu
+        export RSYNC_RSH="ssh -o ControlMaster=auto -o ControlPath=/tmp/tracker-pull-%C -o ControlPersist=30"
+        dest="{{.DEST}}"
+        mkdir -p "$dest/clips"
+        # One listing: the remote data path, then every clip as <name> <path>.
+        listing=$($RSYNC_RSH "{{.JETSON}}" 'cd {{.TRACKER_DIR}}/data && pwd && for d in clips/*/ sessions/*/clips/*/; do
+          [ -d "$d" ] || continue; d=${d%/}; case $d in
+            sessions/*) s=${d#sessions/}; echo "s${s%%/*}-${d##*/} $d" ;;
+            *) echo "${d##*/} $d" ;; esac; done')
+        remote=$(echo "$listing" | head -n 1)
+        for f in config.toml calibration.json; do
+          [ -e "$dest/$f" ] || rsync -a --ignore-existing "{{.JETSON}}:$remote/$f" "$dest/" 2>/dev/null || echo "no $f on {{.JETSON}}"
+        done
+        echo "$listing" | tail -n +2 | while read -r name path; do
+          [ -e "$dest/clips/$name" ] && continue
+          rsync -a --ignore-existing "{{.JETSON}}:$remote/$path/" "$dest/clips/.partial-$name/" || exit 1
+          mv "$dest/clips/.partial-$name" "$dest/clips/$name"
+          echo "$name"
+        done
+        echo "clips in $dest/clips: $(ls "$dest/clips" | wc -l)"
+
   train:
     desc: Fine-tune a ball detector from labels and export ONNX (DATA may list several directories)
     env:
