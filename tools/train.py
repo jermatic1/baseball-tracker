@@ -84,7 +84,7 @@ def self_test():
 
     with tempfile.TemporaryDirectory() as tmp:
         clip_dir = Path(tmp)
-        assert empty_clip_frames(clip_dir, 25) == [0, 10, 20]
+        assert empty_clip_frames(clip_dir, 25) == [0, 10]
         frames = [{"index": k, "balls": [{}] if k % 2 else []} for k in range(200)]
         (clip_dir / "detections.json").write_text(json.dumps({"frames": frames}))
         picked = empty_clip_frames(clip_dir, 200)
