@@ -57,6 +57,9 @@ main() {
   fi
 
   mkdir -p "$dest/data" "$dest/models"
+  # TensorRT engines are tied to the runtime that built them; the first start
+  # after an install rebuilds them.
+  rm -rf "$dest/models/.trt_cache"
   curl -fsSL "https://github.com/$repo/releases/download/latest/$asset" | tar -xzf - -C "$dest"
   chmod +x "$dest/tracker"
   echo "installed $(cat "$dest/VERSION") in $dest"
