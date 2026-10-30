@@ -12,7 +12,6 @@ button, input { margin-right: 6px; }
 .clip { display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 6px; }
 .clip.on { background: #345; color: #fff; }
 .clip.empty { color: #888; text-decoration: line-through; }
-.clip.done::after { content: " \2713"; color: #6f6; }
 #clipstate { color: #f66; }
 #zoom { position: fixed; right: 12px; top: 12px; border: 1px solid #444; background: #000; }
 #status { margin-top: 8px; }
@@ -33,11 +32,10 @@ button, input { margin-right: 6px; }
   <div>
     <button id="mode">frames view (t)</button>
     <button id="emptyclip">no ball in clip (e)</button>
-    <button id="unreviewed">next unreviewed (N)</button>
     <span id="clipstate"></span>
   </div>
   <div id="tracksview">
-    <p>Each row is a track the detector linked. a = accept as ball, r = reject, A = accept every moving track in the clip. j / k = next / previous track, n / p = next / previous clip, N = next unreviewed clip. The next clip opens when every track here is reviewed. t = per-frame view at this track.</p>
+    <p>Each row is a track the detector linked. a = accept as ball, r = reject, A = accept every moving track in the clip. j / k = next / previous track, n / p = next / previous clip. The next clip opens when every track here is reviewed. t = per-frame view at this track.</p>
     <div id="tracks"></div>
   </div>
   <div id="frameview" class="hidden">
@@ -72,7 +70,6 @@ let n = 0;
 let i = 0;
 let labels = [];
 let emptyClips = new Set();
-let doneClips = new Set();
 let bitmap = null;
 let mode = "tracks";
 let tracks = [];
@@ -122,16 +119,12 @@ function paintStatus() {
   statusEl.textContent =
     balls + " ball clicks, " + empty + " empty frames, " + emptyClips.size + " empty clips";
   clipStateEl.textContent = emptyClips.has(clipId) ? "clip marked empty" : "";
-  [...clipsEl.children].forEach((el) => {
-    el.classList.toggle("empty", emptyClips.has(el.dataset.id));
-    el.classList.toggle("done", doneClips.has(el.dataset.id));
-  });
+  [...clipsEl.children].forEach((el) => el.classList.toggle("empty", emptyClips.has(el.dataset.id)));
 }
 async function loadLabels() {
   const body = await (await fetch("/api/labels")).json();
   labels = body.labels || [];
   emptyClips = new Set(body.empty_clips || []);
-  doneClips = new Set(body.done_clips || []);
   if (body.box) boxEl.value = String(body.box);
   paintStatus();
   draw();
@@ -169,13 +162,6 @@ function stepClip(d) {
   const el = [...clipsEl.children].find((e) => e.dataset.id === clipId);
   const next = d > 0 ? el?.nextElementSibling : el?.previousElementSibling;
   if (next) next.click();
-}
-function nextUnreviewed() {
-  const els = [...clipsEl.children];
-  const at = els.findIndex((e) => e.dataset.id === clipId);
-  const next = els.find((e, k) => k > at && !doneClips.has(e.dataset.id));
-  if (next) next.click();
-  else statusEl.textContent = "no unreviewed clip after " + clipId;
 }
 function frameBitmap(index) {
   if (!thumbs.has(index)) {
@@ -300,14 +286,12 @@ canvas.onmousemove = (ev) => {
 document.getElementById("prev").onclick = () => show(i - 1);
 document.getElementById("next").onclick = () => show(i + 1);
 document.getElementById("emptyclip").onclick = toggleEmptyClip;
-document.getElementById("unreviewed").onclick = nextUnreviewed;
 modeEl.onclick = () => setMode(mode === "tracks" ? "frames" : "tracks");
 scrub.oninput = () => show(Number(scrub.value));
 boxEl.onchange = draw;
 window.onkeydown = (ev) => {
   if (ev.target.type === "number" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
   if (ev.key === "e") toggleEmptyClip();
-  if (ev.key === "N") nextUnreviewed();
   if (ev.key === "t") setMode(mode === "tracks" ? "frames" : "tracks");
   if (mode === "tracks") {
     const t = tracks[sel];

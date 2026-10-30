@@ -393,14 +393,6 @@ fn write_depth(out: &mut impl Write, values: &[u16]) -> Result<(), TrackerError>
     Ok(())
 }
 
-/// Clip ids from the directory names under `clips/`: any visible name, sorted
-/// as strings. Recorded clips are `NNNN`; pulled session clips are `s<id>-NNNN`.
-fn clip_names(names: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut ids: Vec<String> = names.into_iter().filter(|n| !n.starts_with('.')).collect();
-    ids.sort();
-    ids
-}
-
 impl DataDir {
     pub fn create(dir: impl AsRef<Path>) -> Result<Self, TrackerError> {
         let dir = dir.as_ref().to_path_buf();
@@ -431,14 +423,19 @@ impl DataDir {
         if !dir.exists() {
             return Ok(Vec::new());
         }
-        let mut names = Vec::new();
+        let mut ids = Vec::new();
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                names.push(entry.file_name().to_string_lossy().into_owned());
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.parse::<u32>().is_ok() {
+                ids.push(name);
             }
         }
-        Ok(clip_names(names))
+        ids.sort();
+        Ok(ids)
     }
 
     pub fn save_clip(
@@ -748,19 +745,5 @@ fn paint_disk(left: &mut [u8], depth: &mut [u16], width: u32, height: u32, disk:
             left[i] = disk.value;
             depth[i] = disk.depth_mm;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::clip_names;
-
-    #[test]
-    fn clip_names_keep_any_visible_name_sorted_as_strings() {
-        let names = ["0010", ".tmp", "s2-0001", "0002", "s10-0001", "s2-0003"];
-        assert_eq!(
-            clip_names(names.map(String::from)),
-            vec!["0002", "0010", "s10-0001", "s2-0001", "s2-0003"]
-        );
     }
 }

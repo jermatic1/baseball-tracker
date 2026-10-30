@@ -51,22 +51,6 @@ struct Reviewed {
     verdict: String,
 }
 
-impl LabelFile {
-    /// Clips with any mark, marked empty, or with a reviewed track, sorted.
-    fn done_clips(&self) -> Vec<&str> {
-        let mut clips: Vec<&str> = self
-            .marks
-            .iter()
-            .map(|m| m.clip.as_str())
-            .chain(self.empty_clips.iter().map(String::as_str))
-            .chain(self.reviewed_tracks.iter().map(|r| r.clip.as_str()))
-            .collect();
-        clips.sort_unstable();
-        clips.dedup();
-        clips
-    }
-}
-
 impl Reviewed {
     fn matches(&self, clip: &str, start: usize, end: usize, cx: f64, cy: f64) -> bool {
         self.clip == clip
@@ -267,7 +251,6 @@ async fn labels_api(
         "box": st.labels.box_px,
         "labels": labels,
         "empty_clips": st.labels.empty_clips,
-        "done_clips": st.labels.done_clips(),
     })))
 }
 
@@ -518,26 +501,6 @@ mod tests {
         assert_eq!(labels.marks, vec![ball(9, 5.0)]);
         assert_eq!(labels.reviewed_tracks.len(), 1);
         assert_eq!(labels.reviewed_tracks[0].verdict, "reject");
-    }
-
-    #[test]
-    fn done_clips_count_marks_empty_clips_and_reviews() {
-        let mut labels = LabelFile {
-            box_px: 32,
-            marks: vec![ball(9, 5.0)],
-            empty_clips: vec!["s3-0002".into()],
-            reviewed_tracks: Vec::new(),
-        };
-        labels.reviewed_tracks.push(Reviewed {
-            clip: "0002".into(),
-            start: 0,
-            end: 4,
-            cx: 1.0,
-            cy: 1.0,
-            verdict: "reject".into(),
-        });
-        labels.marks.push(ball(3, 1.0));
-        assert_eq!(labels.done_clips(), vec!["0001", "0002", "s3-0002"]);
     }
 
     #[test]
