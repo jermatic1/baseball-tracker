@@ -13,12 +13,14 @@
 .training button { padding: 2px 6px; margin: 0; }
 .training button.on { background: #9cf; color: #111; }
 .changed { color: #fc6; }
+.trained { color: #9c9; }
 </style>
 </head>
 <body>
 <nav><a href="/">Tracker</a><a href="/setup">Setup</a><a href="/sessions" class="here">Sessions</a><a href="/train">Train</a></nav>
 <h1>Sessions</h1>
 <input id="filter" placeholder="filter: tag, user, notes, model">
+<div id="untrained" class="mono"></div>
 <div id="status"></div>
 <datalist id="known-tags"></datalist>
 <table id="sessions">
@@ -117,6 +119,13 @@ function notesCell(tr, s) {
   tr.appendChild(td);
 }
 
+// Sessions with reviewed clips marked include that the live model did not
+// train on.
+function showUntrained() {
+  const n = sessions.filter((s) => s.training === "include" && s.reviewed > 0 && !s.trained).length;
+  document.getElementById("untrained").textContent = `${n} reviewed sessions not yet trained on`;
+}
+
 function trainingCell(tr, s) {
   const td = document.createElement("td");
   td.className = "training";
@@ -125,9 +134,16 @@ function trainingCell(tr, s) {
       const b = document.createElement("button");
       b.textContent = label;
       b.className = s.training === value ? "on" : "";
-      b.onclick = async () => { if (await save(s, { training: value })) draw(); };
+      b.onclick = async () => { if (await save(s, { training: value })) { draw(); showUntrained(); } };
       return b;
     }));
+    if (s.trained) {
+      const mark = document.createElement("span");
+      mark.className = "trained";
+      mark.textContent = " trained";
+      mark.title = "the live model trained on this session";
+      td.appendChild(mark);
+    }
   };
   draw();
   tr.appendChild(td);
@@ -184,6 +200,7 @@ fetch("/api/sessions").then((r) => r.json()).then((rows) => {
   document.querySelector("#sessions tbody").replaceChildren(...rows.map(render));
   knownTags();
   applyFilter();
+  showUntrained();
 }).catch((e) => {
   status.textContent = String(e);
 });

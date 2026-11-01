@@ -4,6 +4,7 @@ pub mod dataset;
 pub mod flight;
 pub mod game;
 pub mod geom;
+pub mod model_record;
 pub mod mot;
 pub mod plate;
 pub mod rectify;
@@ -26,6 +27,7 @@ pub use config::{
 };
 pub use game::Game;
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
+pub use model_record::ModelRecord;
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use rectify::{Eye, Rectifier};
 pub use rng::Rng;

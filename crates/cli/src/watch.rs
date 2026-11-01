@@ -2,7 +2,9 @@
 //! a watcher that cuts the windows where a ball moved, and a coordinator
 //! that measures each window, broadcasts its events, records them under the
 //! active session, and saves it as a clip. Detection runs only while a
-//! client is connected.
+//! client is connected. A promoted model loads on its own thread while the
+//! old one keeps detecting, then is handed to the detector thread, which
+//! swaps it in between frames.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -42,6 +44,8 @@ struct Shared {
     sent: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     hub: Arc<Hub>,
+    /// Loaded models waiting to replace the running one.
+    swap: Receiver<Detector>,
 }
 
 pub async fn watch(
@@ -53,12 +57,7 @@ pub async fn watch(
     let session = DataDir::create(&path).map_err(|e| e.to_string())?;
     let detector = Detector::load(&model)?;
     let hub = Hub::open(session.clone())?;
-    hub.set_model(tracker::ModelInfo {
-        file: Path::new(&model)
-            .file_name()
-            .map_or(model.clone(), |n| n.to_string_lossy().into_owned()),
-        sha1: detector.model_hash().to_string(),
-    });
+    hub.set_model(model_info(Path::new(&model), &detector));
     #[cfg(feature = "challenges")]
     hub.register(Box::new(challenges::Challenges::load(&session.dir)?));
     let status = Arc::new(Mutex::new(LiveStatus {
@@ -68,21 +67,24 @@ pub async fn watch(
     }));
     let (frame_tx, frame_rx) = mpsc::sync_channel(QUEUE);
     let (done_tx, done_rx) = unbounded_channel();
+    let (swap_tx, swap_rx) = mpsc::channel();
+    let c = session.config.capture.clone();
     let tap = LiveTap {
         frames: frame_tx,
         sent: Arc::new(AtomicU64::new(0)),
         drops: Arc::new(AtomicU64::new(0)),
         status: Arc::clone(&status),
         stop: Arc::new(AtomicBool::new(false)),
+        reload: loader(swap_tx, Arc::clone(&hub), c.width, c.height),
     };
     let shared = Shared {
         status: Arc::clone(&status),
         sent: Arc::clone(&tap.sent),
         stop: Arc::clone(&tap.stop),
         hub: Arc::clone(&hub),
+        swap: swap_rx,
     };
     let watch_status = Arc::clone(&status);
-    let c = session.config.capture.clone();
     let coordinator = tokio::spawn(coordinate(
         done_rx,
         Arc::clone(&hub),
@@ -158,6 +160,35 @@ pub async fn watch(
     result
 }
 
+fn model_info(model: &Path, detector: &Detector) -> tracker::ModelInfo {
+    tracker::ModelInfo {
+        file: model.file_name().map_or_else(
+            || model.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        ),
+        sha1: detector.model_hash().to_string(),
+    }
+}
+
+/// Load a model and run one frame through it, so its engine is built before
+/// it replaces the running detector, then send it to the detector thread.
+fn loader(
+    swap: mpsc::Sender<Detector>,
+    hub: Arc<Hub>,
+    width: u32,
+    height: u32,
+) -> crate::train::Loader {
+    Arc::new(move |model: &Path| {
+        let path = model.to_str().ok_or("the model path is not UTF-8")?;
+        let detector = Detector::load_warm(path, width, height)?;
+        let info = model_info(model, &detector);
+        swap.send(detector)
+            .map_err(|_| "the detector has stopped".to_string())?;
+        hub.set_model(info);
+        Ok(())
+    })
+}
+
 fn spawn_detector(
     rx: Receiver<Arc<StoredFrame>>,
     detector: Detector,
@@ -190,6 +221,7 @@ fn detect_loop(
         sent,
         stop,
         hub,
+        swap,
     } = shared;
     let cfg: WatchConfig = session.config.watch.clone();
     let c = session.config.capture.clone();
@@ -226,6 +258,10 @@ fn detect_loop(
         };
     while let Ok(frame) = rx.recv() {
         taken += 1;
+        if let Ok(next) = swap.try_recv() {
+            detector = next;
+            println!("detector: swapped in the promoted model");
+        }
         if stop.load(Ordering::Relaxed) && watcher.state() == WatchState::Idle {
             let skipped = sent.load(Ordering::Relaxed).saturating_sub(taken) + 1;
             println!("stopping with no episode open; skipping {skipped} queued frames");

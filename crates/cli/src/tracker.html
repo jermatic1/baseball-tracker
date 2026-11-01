@@ -79,7 +79,8 @@ connect("tracker page", {
   status(m) {
     const d = m.detector;
     detectorEl.textContent = `${m.capturing ? "capturing" : "idle"} | clients ${m.clients.join(", ") || "none"}` +
-      (d ? ` | detector ${d.state}, ${d.rate.toFixed(0)} fps | clips ${d.clips}` : "");
+      (d ? ` | detector ${d.state}, ${d.rate.toFixed(0)} fps | clips ${d.clips}` : "") +
+      ` | ${modelLine(m.model)}`;
   },
   event(m) {
     const r = m.record;

@@ -211,6 +211,25 @@ pub struct Status {
     pub ir_flood: f32,
     pub ir_dot: f32,
     pub mount: MountConfig,
+    pub model: ModelStatus,
+}
+
+/// The detector model the tracker runs, as the status line shows it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelStatus {
+    pub file: String,
+    /// The first seven hex digits of its SHA-1; empty with no model file.
+    pub sha1: String,
+    /// When the Train page promoted it, RFC 3339; none for a model made
+    /// some other way.
+    pub promoted: Option<String>,
+    /// Sessions with reviewed clips marked for training that it did not
+    /// train on.
+    pub untrained: usize,
+    /// A promoted model is downloading or loading.
+    pub loading: bool,
+    /// Why the last promoted model was not loaded.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -375,6 +394,14 @@ mod tests {
             ir_flood: 0.0,
             ir_dot: 0.0,
             mount: mount.clone(),
+            model: ModelStatus {
+                file: "ball.onnx".into(),
+                sha1: "abc1234".into(),
+                promoted: Some("2026-10-31T12:00:00Z".into()),
+                untrained: 2,
+                loading: false,
+                error: None,
+            },
         }));
         roundtrip(ServerMsg::Calibration {
             found: true,

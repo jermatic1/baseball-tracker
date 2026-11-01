@@ -51,3 +51,12 @@ function cell(row, text) {
   td.textContent = text;
   row.appendChild(td);
 }
+
+// The status message's model fields as one line.
+function modelLine(m) {
+  if (!m) return "";
+  if (m.loading) return "loading model";
+  let line = `model ${[m.file, m.sha1].filter(Boolean).join(" ") || "none"}`;
+  if (m.promoted) line += `, promoted ${m.promoted.replace("T", " ").replace("Z", "")}`;
+  return `${line} | ${m.untrained} reviewed sessions not yet trained on`;
+}

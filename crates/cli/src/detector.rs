@@ -3,9 +3,9 @@
 //! and the live watcher.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use image::{DynamicImage, GrayImage};
-use sha1::{Digest, Sha1};
 use tracker::{BallBox, Eye, Rectifier, StereoCalib};
 use ultralytics_inference::{InferenceConfig, Quantization, YOLOModel};
 
@@ -30,29 +30,63 @@ pub struct FrameView<'a> {
 
 impl Detector {
     pub fn load(model: &str) -> Result<Self, String> {
-        load_runtime()?;
-        let provider = available_provider();
+        Self::open(model, None)
+    }
+
+    /// Load `model` and run one `width`x`height` frame through it, so its
+    /// engine is built. On failure the previous model's engine cache is kept.
+    pub fn load_warm(model: &str, width: u32, height: u32) -> Result<Self, String> {
+        Self::open(model, Some((width, height)))
+    }
+
+    fn open(model: &str, warm: Option<(u32, u32)>) -> Result<Self, String> {
+        let provider = runtime()?;
         ultralytics_inference::logging::set_verbose(false);
         let config = InferenceConfig::default().with_quantize(Quantization::Fp16);
         let cache = engine_cache_dir(Path::new(model));
-        let hash = model_hash(Path::new(model))?;
-        if clear_stale_cache(&cache, &hash)? {
+        let hash = tracker::model_record::file_sha1(Path::new(model))?;
+        let aside = set_aside_stale_cache(&cache, &hash)?;
+        if aside.is_some() {
             println!(
-                "cleared TensorRT engine cache {}: model changed",
+                "set aside TensorRT engine cache {}: model changed",
                 cache.display()
             );
         }
-        let yolo = YOLOModel::load_with_config(model, config).map_err(|e| e.to_string())?;
-        if cache.is_dir() {
-            std::fs::write(cache.join(MODEL_MARKER), &hash)
-                .map_err(|e| format!("{}: {e}", cache.display()))?;
-        }
+        let opened = (|| {
+            let yolo = YOLOModel::load_with_config(model, config).map_err(|e| e.to_string())?;
+            let mut detector = Self {
+                yolo,
+                provider,
+                hash: hash.clone(),
+            };
+            if let Some((width, height)) = warm {
+                detector.warm_up(width, height)?;
+            }
+            if cache.is_dir() {
+                std::fs::write(cache.join(MODEL_MARKER), &hash)
+                    .map_err(|e| format!("{}: {e}", cache.display()))?;
+            }
+            Ok(detector)
+        })();
+        let detector = match (opened, aside) {
+            (Ok(detector), aside) => {
+                if let Some(aside) = aside {
+                    if let Err(e) = std::fs::remove_dir_all(&aside) {
+                        eprintln!("{}: {e}", aside.display());
+                    }
+                }
+                detector
+            }
+            (Err(e), None) => return Err(e),
+            (Err(e), Some(aside)) => {
+                return Err(match restore_stale_cache(&cache, &aside) {
+                    Ok(()) => e,
+                    Err(restore) => format!("{e}; {restore}"),
+                })
+            }
+        };
         println!("detector {model} on {provider}");
-        Ok(Self {
-            yolo,
-            provider,
-            hash,
-        })
+        Ok(detector)
     }
 
     pub fn provider(&self) -> &str {
@@ -61,6 +95,22 @@ impl Detector {
 
     pub fn model_hash(&self) -> &str {
         &self.hash
+    }
+
+    /// Run one blank frame so a TensorRT engine is built before the
+    /// detector sees the camera.
+    pub fn warm_up(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let blank = vec![0u8; (width * height) as usize];
+        self.detect(&FrameView {
+            width,
+            height,
+            left: &blank,
+            right: None,
+            depth: None,
+            rectifier: None,
+            calib: StereoCalib::nominal(width),
+        })
+        .map(|_| ())
     }
 
     pub fn detect(&mut self, frame: &FrameView) -> Result<Vec<BallBox>, String> {
@@ -188,27 +238,47 @@ fn engine_cache_dir(model: &Path) -> PathBuf {
     parent.join(".trt_cache").join(format!("{stem}_fp16"))
 }
 
-fn model_hash(model: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(model).map_err(|e| format!("{}: {e}", model.display()))?;
-    Ok(Sha1::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
-}
-
 /// TensorRT names engines by graph structure, so retrained weights with the
-/// same architecture would reuse the old engine. Delete the cache unless its
-/// marker matches `hash`; returns whether it was deleted.
-fn clear_stale_cache(cache: &Path, hash: &str) -> Result<bool, String> {
+/// same architecture would reuse the old engine. Unless its marker matches
+/// `hash`, rename the cache aside so a failed load can put it back; returns
+/// the aside path.
+fn set_aside_stale_cache(cache: &Path, hash: &str) -> Result<Option<PathBuf>, String> {
     if !cache.is_dir() {
-        return Ok(false);
+        return Ok(None);
     }
     let marker = std::fs::read_to_string(cache.join(MODEL_MARKER)).unwrap_or_default();
     if marker.trim() == hash {
-        return Ok(false);
+        return Ok(None);
     }
-    std::fs::remove_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
-    Ok(true)
+    let aside = stale_dir(cache);
+    if aside.exists() {
+        std::fs::remove_dir_all(&aside).map_err(|e| format!("{}: {e}", aside.display()))?;
+    }
+    std::fs::rename(cache, &aside).map_err(|e| format!("{}: {e}", cache.display()))?;
+    Ok(Some(aside))
+}
+
+/// After a failed load, drop whatever cache it built and return the one set
+/// aside.
+fn restore_stale_cache(cache: &Path, aside: &Path) -> Result<(), String> {
+    if cache.exists() {
+        std::fs::remove_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
+    }
+    std::fs::rename(aside, cache).map_err(|e| format!("{}: {e}", aside.display()))
+}
+
+fn stale_dir(cache: &Path) -> PathBuf {
+    let mut name = cache.file_name().unwrap_or_default().to_os_string();
+    name.push(".stale");
+    cache.with_file_name(name)
+}
+
+/// Open the runtime once per process and pick its provider.
+fn runtime() -> Result<&'static str, String> {
+    static RUNTIME: OnceLock<Result<&'static str, String>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| load_runtime().map(|()| available_provider()))
+        .clone()
 }
 
 /// Open the ONNX Runtime shipped next to the executable, unless `ORT_DYLIB_PATH`
@@ -267,7 +337,7 @@ fn available_provider() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_stale_cache, is_ball, MODEL_MARKER};
+    use super::{is_ball, restore_stale_cache, set_aside_stale_cache, MODEL_MARKER};
 
     #[test]
     fn picks_the_ball_class_by_name_or_position() {
@@ -281,22 +351,59 @@ mod tests {
     }
 
     #[test]
-    fn clears_the_engine_cache_only_when_the_model_changed() {
+    fn sets_the_engine_cache_aside_only_when_the_model_changed() {
         let root = std::env::temp_dir().join(format!("tracker-trt-{}", std::process::id()));
         let cache = root.join(".trt_cache").join("ball_fp16");
+        let aside = root.join(".trt_cache").join("ball_fp16.stale");
 
-        assert!(!clear_stale_cache(&cache, "abc").unwrap());
+        assert_eq!(set_aside_stale_cache(&cache, "abc").unwrap(), None);
 
         std::fs::create_dir_all(&cache).unwrap();
-        assert!(clear_stale_cache(&cache, "abc").unwrap());
+        assert_eq!(
+            set_aside_stale_cache(&cache, "abc").unwrap(),
+            Some(aside.clone())
+        );
         assert!(!cache.exists());
+        assert!(aside.is_dir());
+        std::fs::remove_dir_all(&aside).unwrap();
 
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(cache.join(MODEL_MARKER), "abc").unwrap();
-        assert!(!clear_stale_cache(&cache, "abc").unwrap());
+        assert_eq!(set_aside_stale_cache(&cache, "abc").unwrap(), None);
         assert!(cache.exists());
-        assert!(clear_stale_cache(&cache, "def").unwrap());
+        assert_eq!(
+            set_aside_stale_cache(&cache, "def").unwrap(),
+            Some(aside.clone())
+        );
         assert!(!cache.exists());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_load_puts_the_old_engine_cache_back() {
+        let root = std::env::temp_dir().join(format!("tracker-trt-restore-{}", std::process::id()));
+        let cache = root.join(".trt_cache").join("ball_fp16");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join(MODEL_MARKER), "old").unwrap();
+        std::fs::write(cache.join("engine"), "old engine").unwrap();
+
+        let aside = set_aside_stale_cache(&cache, "new").unwrap().unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("partial"), "").unwrap();
+        restore_stale_cache(&cache, &aside).unwrap();
+
+        assert!(!aside.exists());
+        assert!(!cache.join("partial").exists());
+        assert_eq!(
+            std::fs::read_to_string(cache.join(MODEL_MARKER)).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cache.join("engine")).unwrap(),
+            "old engine"
+        );
+        assert_eq!(set_aside_stale_cache(&cache, "old").unwrap(), None);
 
         std::fs::remove_dir_all(&root).unwrap();
     }

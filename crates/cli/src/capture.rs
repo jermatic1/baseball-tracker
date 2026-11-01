@@ -192,6 +192,8 @@ pub(crate) mod server {
         /// Set when the server is shutting down so the detector can skip
         /// its backlog if no episode is open.
         pub stop: Arc<AtomicBool>,
+        /// Loads a promoted model and swaps it into the detector.
+        pub reload: crate::train::Loader,
     }
 
     /// A plate fit with where its corners came from and what looks wrong.
@@ -275,7 +277,13 @@ pub(crate) mod server {
     ) -> Result<(), String> {
         let stopping = Arc::new(AtomicBool::new(false));
         let root = session.dir.clone();
-        let trainer = crate::train::router(root.clone(), &session.config.training.server, model);
+        let trainer = crate::train::router(
+            root.clone(),
+            &session.config.training.server,
+            model,
+            Arc::clone(&hub),
+            live.as_ref().map(|tap| Arc::clone(&tap.reload)),
+        );
         let state = Arc::new(Mutex::new(CaptureState {
             latest: None,
             stats: None,
@@ -767,6 +775,7 @@ pub(crate) mod server {
                 ir_flood: st.ir_flood,
                 ir_dot: st.ir_dot,
                 mount: app.hub.mount(),
+                model: app.hub.model_status(),
             };
             drop(st);
             app.hub.send(&ServerMsg::Status(status));

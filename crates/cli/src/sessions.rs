@@ -13,7 +13,7 @@ use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::Serialize;
 use tower::ServiceExt;
-use tracker::{MetaUpdate, Session, SessionMeta};
+use tracker::{MetaUpdate, ModelRecord, Session, SessionMeta};
 
 use crate::error::AppError;
 use crate::hub::Hub;
@@ -26,6 +26,8 @@ struct Row {
     id: String,
     clips: usize,
     reviewed: usize,
+    /// The live model trained on it.
+    trained: bool,
     #[serde(flatten)]
     meta: SessionMeta,
 }
@@ -66,6 +68,7 @@ async fn page() -> Response {
 }
 
 async fn list(State(sites): State<Arc<Sites>>) -> Result<Json<Vec<Row>>, AppError> {
+    let record = sites.hub.model_record();
     let mut rows = Vec::new();
     for (session, user) in sites.hub.sessions()? {
         let id = session.id.to_string();
@@ -75,13 +78,13 @@ async fn list(State(sites): State<Arc<Sites>>) -> Result<Json<Vec<Row>>, AppErro
         }
         let meta = SessionMeta::load_or_create(&dir, || older_session(&session, user))
             .map_err(|e| e.to_string())?;
-        rows.push(row(id, &dir, meta)?);
+        rows.push(row(id, &dir, meta, record.as_ref())?);
     }
     let loose = session_dir(&sites.root, NO_SESSION);
     if clip_count(&loose) > 0 {
         let meta =
             SessionMeta::load_or_create(&loose, SessionMeta::default).map_err(|e| e.to_string())?;
-        rows.push(row(NO_SESSION.into(), &loose, meta)?);
+        rows.push(row(NO_SESSION.into(), &loose, meta, record.as_ref())?);
     }
     Ok(Json(rows))
 }
@@ -96,8 +99,14 @@ fn older_session(session: &Session, user: String) -> SessionMeta {
     }
 }
 
-fn row(id: String, dir: &FsPath, meta: SessionMeta) -> Result<Row, String> {
+fn row(
+    id: String,
+    dir: &FsPath,
+    meta: SessionMeta,
+    record: Option<&ModelRecord>,
+) -> Result<Row, String> {
     Ok(Row {
+        trained: record.is_some_and(|r| r.trained_on(&id)),
         id,
         clips: clip_count(dir),
         reviewed: crate::label::reviewed_clips(dir)?,
@@ -128,7 +137,7 @@ async fn update(
     match meta
         .save(&dir)
         .map_err(|e| e.to_string())
-        .and_then(|()| row(id, &dir, meta))
+        .and_then(|()| row(id, &dir, meta, sites.hub.model_record().as_ref()))
     {
         Ok(row) => Json(row).into_response(),
         Err(e) => AppError(e).into_response(),

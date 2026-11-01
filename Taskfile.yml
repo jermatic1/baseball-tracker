@@ -49,15 +49,15 @@ tasks:
       - cargo run -p cli --release --features oak --quiet -- watch {{.DATA}}
 
   replay:
-    desc: Replay recorded clips (FROM=data/sessions/3) through the live path without the camera; GAP= seconds between clips
+    desc: Replay recorded clips (FROM=data/sessions/3) through the live path without the camera; GAP= seconds between clips, MODEL= for the model
     deps: [onnxruntime]
     cmds:
-      - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}}
+      - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}} --model {{.MODEL | default "models/ball.onnx"}}
 
   mock:
-    desc: Serve the socket with no camera, making up a pitch or hit every PERIOD seconds
+    desc: Serve the socket with no camera, making up a pitch or hit every PERIOD seconds; MODEL= for where Promote writes
     cmds:
-      - cargo run -p cli --quiet -- mock {{.DATA}}-mock --period {{.PERIOD | default "4"}}
+      - cargo run -p cli --quiet -- mock {{.DATA}}-mock --period {{.PERIOD | default "4"}} --model {{.MODEL | default "models/ball.onnx"}}
 
   check:
     desc: Format, lint, and test

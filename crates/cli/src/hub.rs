@@ -9,10 +9,10 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 use tracker::{
     session_stats, summary_lines, Activity, Config, DataDir, Game, HitRecord, Mode, ModelInfo,
-    MountConfig, Session, SessionMeta, Store, User,
+    ModelRecord, MountConfig, Session, SessionMeta, Store, User,
 };
 
-use crate::protocol::{ServerMsg, SessionInfo, UserInfo};
+use crate::protocol::{ModelStatus, ServerMsg, SessionInfo, UserInfo};
 
 /// Capture runs only for connected clients, and never during calibration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +66,9 @@ pub struct Hub {
     /// Exposure and gain as last set, recorded in each new session.
     controls: Mutex<(u32, u32)>,
     model: RwLock<Option<ModelInfo>>,
+    /// The live model for the status line, and its record when it has one.
+    model_status: RwLock<ModelStatus>,
+    model_record: RwLock<Option<ModelRecord>>,
 }
 
 impl Hub {
@@ -100,6 +103,8 @@ impl Hub {
             config: RwLock::new(root.config.clone()),
             controls: Mutex::new((root.config.capture.exposure, root.config.capture.gain)),
             model: RwLock::new(None),
+            model_status: RwLock::new(ModelStatus::default()),
+            model_record: RwLock::new(None),
             root,
             store: Mutex::new(store),
             active: RwLock::new(active),
@@ -119,6 +124,30 @@ impl Hub {
     pub fn set_model(&self, model: ModelInfo) {
         if let Ok(mut m) = self.model.write() {
             *m = Some(model);
+        }
+    }
+
+    pub fn model_status(&self) -> ModelStatus {
+        self.model_status
+            .read()
+            .map(|m| m.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn update_model_status(&self, change: impl FnOnce(&mut ModelStatus)) {
+        if let Ok(mut m) = self.model_status.write() {
+            change(&mut m);
+        }
+    }
+
+    /// What the live model trained on, when the Train page promoted it.
+    pub fn model_record(&self) -> Option<ModelRecord> {
+        self.model_record.read().ok().and_then(|r| r.clone())
+    }
+
+    pub fn set_model_record(&self, record: Option<ModelRecord>) {
+        if let Ok(mut r) = self.model_record.write() {
+            *r = record;
         }
     }
 
