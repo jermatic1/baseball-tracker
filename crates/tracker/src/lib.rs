@@ -7,6 +7,7 @@ pub mod mot;
 pub mod plate;
 pub mod rectify;
 pub mod rng;
+pub mod session_meta;
 pub mod stats;
 pub mod stereo;
 pub mod store;
@@ -26,6 +27,7 @@ pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Tra
 pub use mot::{Detection, Observation, TrackedObject, Tracker, TrackerConfig};
 pub use rectify::{Eye, Rectifier};
 pub use rng::Rng;
+pub use session_meta::{MetaUpdate, ModelInfo, SessionMeta, Training};
 pub use stats::{session_stats, summary_lines, SessionStats, SummaryLine};
 pub use stereo::{stereo_calib_from_device, StereoCalib};
 pub use store::{Activity, Mode, Session, Store, User};

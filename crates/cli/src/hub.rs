@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde_json::Value;
 use tokio::sync::broadcast;
 use tracker::{
-    session_stats, summary_lines, Activity, Config, DataDir, Game, HitRecord, Mode, MountConfig,
-    Session, Store,
+    session_stats, summary_lines, Activity, Config, DataDir, Game, HitRecord, Mode, ModelInfo,
+    MountConfig, Session, SessionMeta, Store, User,
 };
 
 use crate::protocol::{ServerMsg, SessionInfo, UserInfo};
@@ -63,6 +63,9 @@ pub struct Hub {
     store: Mutex<Store>,
     active: RwLock<Option<Active>>,
     games: Mutex<Vec<Box<dyn Game>>>,
+    /// Exposure and gain as last set, recorded in each new session.
+    controls: Mutex<(u32, u32)>,
+    model: RwLock<Option<ModelInfo>>,
 }
 
 impl Hub {
@@ -95,11 +98,28 @@ impl Hub {
             capturing: AtomicBool::new(false),
             calibrating: AtomicBool::new(false),
             config: RwLock::new(root.config.clone()),
+            controls: Mutex::new((root.config.capture.exposure, root.config.capture.gain)),
+            model: RwLock::new(None),
             root,
             store: Mutex::new(store),
             active: RwLock::new(active),
             games: Mutex::new(Vec::new()),
         }))
+    }
+
+    /// Record the camera's exposure and gain for the next session started.
+    pub fn set_controls(&self, exposure: u32, gain: u32) {
+        if let Ok(mut c) = self.controls.lock() {
+            *c = (exposure, gain);
+        }
+    }
+
+    /// Record the detector model new sessions are recorded with.
+    #[cfg_attr(not(feature = "detect"), allow(dead_code))]
+    pub fn set_model(&self, model: ModelInfo) {
+        if let Ok(mut m) = self.model.write() {
+            *m = Some(model);
+        }
     }
 
     /// Add a game module; the watch command does this for each compiled in.
@@ -218,7 +238,7 @@ impl Hub {
     }
 
     /// Where a clip that starts now is written, and the session it belongs
-    /// to: the active session's directory, or the data directory itself.
+    /// to: the active session's directory, or the folder for loose clips.
     pub fn target(&self) -> (DataDir, Option<i64>) {
         let active = self
             .active
@@ -227,8 +247,18 @@ impl Hub {
             .unwrap_or_else(|e| e.into_inner().clone());
         match active {
             Some(a) => (a.dir, Some(a.session.id)),
-            None => (self.root.clone(), None),
+            None => (self.loose_dir(), None),
         }
+    }
+
+    /// Where clips cut with no session active go: `sessions/none`, set up
+    /// like a session's folder.
+    fn loose_dir(&self) -> DataDir {
+        let dir = self.root.dir.join("sessions").join("none");
+        self.snapshot_dir(dir).unwrap_or_else(|e| {
+            eprintln!("loose clips go to the data directory: {e}");
+            self.root.clone()
+        })
     }
 
     /// What a client is told after hello: the users, the session, the most
@@ -289,6 +319,9 @@ impl Hub {
             .start_session(user, activity, mode)
             .map_err(|e| e.to_string())?;
         let dir = self.session_dir(&session)?;
+        self.session_meta(&store, &session, &who)?
+            .save(&dir.dir)
+            .map_err(|e| e.to_string())?;
         if let Ok(mut active) = self.active.write() {
             *active = Some(Active {
                 session: session.clone(),
@@ -418,6 +451,24 @@ impl Hub {
         crate::history::build(&store).map_err(|e| e.to_string())
     }
 
+    /// Every session, newest first, with its user's name.
+    pub fn sessions(&self) -> Result<Vec<(Session, String)>, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        let users = store.users().map_err(|e| e.to_string())?;
+        let sessions = store.sessions(None).map_err(|e| e.to_string())?;
+        Ok(sessions
+            .into_iter()
+            .map(|s| {
+                let name = users
+                    .iter()
+                    .find(|u| u.id == s.user)
+                    .map(|u| u.name.clone())
+                    .unwrap_or_default();
+                (s, name)
+            })
+            .collect())
+    }
+
     fn take_active(&self) -> Option<Active> {
         self.active.write().ok().and_then(|mut a| a.take())
     }
@@ -425,7 +476,10 @@ impl Hub {
     /// A session's directory: a snapshot of the live config and the camera
     /// calibration, so the session can be replayed on its own.
     fn session_dir(&self, session: &Session) -> Result<DataDir, String> {
-        let dir = self.root.dir.join("sessions").join(session.id.to_string());
+        self.snapshot_dir(self.root.dir.join("sessions").join(session.id.to_string()))
+    }
+
+    fn snapshot_dir(&self, dir: std::path::PathBuf) -> Result<DataDir, String> {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         self.config()
             .save(dir.join("config.toml"))
@@ -435,6 +489,46 @@ impl Hub {
             std::fs::copy(&calibration, dir.join("calibration.json")).map_err(|e| e.to_string())?;
         }
         DataDir::open(dir).map_err(|e| e.to_string())
+    }
+
+    /// The facts of a session just started. The calibration changed when the
+    /// mount differs from the previous session's, read from its
+    /// `session.toml` or, for an older session, its config snapshot.
+    fn session_meta(
+        &self,
+        store: &Store,
+        session: &Session,
+        who: &User,
+    ) -> Result<SessionMeta, String> {
+        let config = self.config();
+        let previous = store
+            .sessions(None)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|s| s.id < session.id)
+            .and_then(|s| {
+                let dir = self.root.dir.join("sessions").join(s.id.to_string());
+                SessionMeta::load(&dir)
+                    .ok()
+                    .and_then(|m| m.mount)
+                    .or_else(|| Config::load(dir.join("config.toml")).ok().map(|c| c.mount))
+            });
+        let (exposure, gain) = self
+            .controls
+            .lock()
+            .map(|c| *c)
+            .unwrap_or((config.capture.exposure, config.capture.gain));
+        Ok(SessionMeta {
+            started: Some(tracker::session_meta::sqlite_to_rfc3339(&session.started)),
+            user: Some(who.name.clone()),
+            activity: Some(session.activity.to_string()),
+            exposure: Some(exposure),
+            gain: Some(gain),
+            calibration_changed: previous.is_some_and(|m| m != config.mount),
+            mount: Some(config.mount),
+            model: self.model.read().ok().and_then(|m| m.clone()),
+            ..SessionMeta::default()
+        })
     }
 
     fn users_msg(&self, store: &Store) -> ServerMsg {
@@ -595,6 +689,11 @@ mod tests {
         let (dir, id) = hub.target();
         assert_eq!(id, Some(1));
         assert!(dir.dir.join("config.toml").exists());
+        let meta = SessionMeta::load(&dir.dir).unwrap();
+        assert_eq!(meta.user.as_deref(), Some("Sam"));
+        assert_eq!(meta.activity.as_deref(), Some("hitting"));
+        assert_eq!(meta.mount, Some(hub.config().mount));
+        assert!(!meta.calibration_changed);
 
         // Replacing sends the old summary, then the new session.
         hub.start_session("1", Activity::Pitching, Mode::Practice)

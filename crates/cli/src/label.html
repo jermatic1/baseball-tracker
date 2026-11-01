@@ -105,7 +105,7 @@ async function show(index) {
   i = Math.max(0, Math.min(n - 1, index));
   scrub.value = String(i);
   idxEl.textContent = i + " / " + (n - 1);
-  const r = await fetch("/api/clips/" + clipId + "/frame/" + i, { cache: "no-store" });
+  const r = await fetch("api/clips/" + clipId + "/frame/" + i, { cache: "no-store" });
   if (!r.ok) return;
   const blob = await r.blob();
   if (bitmap) bitmap.close();
@@ -122,7 +122,7 @@ function paintStatus() {
   [...clipsEl.children].forEach((el) => el.classList.toggle("empty", emptyClips.has(el.dataset.id)));
 }
 async function loadLabels() {
-  const body = await (await fetch("/api/labels")).json();
+  const body = await (await fetch("api/labels")).json();
   labels = body.labels || [];
   emptyClips = new Set(body.empty_clips || []);
   if (body.box) boxEl.value = String(body.box);
@@ -131,7 +131,7 @@ async function loadLabels() {
 }
 async function save(kind, cx, cy) {
   const body = { clip: clipId, index: i, kind, cx, cy, box: Number(boxEl.value) || 32 };
-  const r = await fetch("/api/labels", {
+  const r = await fetch("api/labels", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -146,7 +146,7 @@ async function save(kind, cx, cy) {
 async function toggleEmptyClip() {
   if (!clipId) return;
   const empty = !emptyClips.has(clipId);
-  const r = await fetch("/api/empty_clips", {
+  const r = await fetch("api/empty_clips", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ clip: clipId, empty }),
@@ -166,7 +166,7 @@ function stepClip(d) {
 function frameBitmap(index) {
   if (!thumbs.has(index)) {
     const id = clipId;
-    thumbs.set(index, fetch("/api/clips/" + id + "/frame/" + index)
+    thumbs.set(index, fetch("api/clips/" + id + "/frame/" + index)
       .then((r) => (r.ok ? r.blob() : Promise.reject(r.status)))
       .then((b) => createImageBitmap(b)));
   }
@@ -225,7 +225,7 @@ function selectTrack(k) {
 }
 async function loadTracks() {
   const id = clipId;
-  const body = await (await fetch("/api/clips/" + id + "/tracks")).json();
+  const body = await (await fetch("api/clips/" + id + "/tracks")).json();
   if (id !== clipId) return;
   tracks = body.tracks || [];
   sel = Math.max(0, tracks.findIndex((t) => !t.verdict));
@@ -234,7 +234,7 @@ async function loadTracks() {
 }
 async function review(list, verdict) {
   for (const t of list) {
-    const r = await fetch("/api/tracks/review", {
+    const r = await fetch("api/tracks/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ clip: clipId, verdict, points: t.points }),
@@ -310,7 +310,7 @@ window.onkeydown = (ev) => {
   if (ev.key === "ArrowRight") show(i + 1);
 };
 async function boot() {
-  const session = await (await fetch("/api/session")).json();
+  const session = await (await fetch("api/session")).json();
   await loadLabels();
   for (const id of session.clips || []) {
     const b = document.createElement("button");
@@ -321,7 +321,7 @@ async function boot() {
       clipId = id;
       thumbs = new Map();
       tracks = [];
-      const clip = await (await fetch("/api/clips/" + id)).json();
+      const clip = await (await fetch("api/clips/" + id)).json();
       n = (clip.meta && clip.meta.frames) || 0;
       scrub.max = String(Math.max(0, n - 1));
       [...clipsEl.children].forEach((el) => el.classList.toggle("on", el.dataset.id === id));

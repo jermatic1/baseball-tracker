@@ -78,7 +78,19 @@ struct LabelState {
 }
 
 pub async fn label(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
-    let session = tracker::DataDir::open(&path).map_err(|e| e.to_string())?;
+    let app = router(&path)?;
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .map_err(|e| e.to_string())?;
+    println!("http://{bind}");
+    axum::serve(listener, app).await.map_err(|e| e.to_string())
+}
+
+/// The labelling page and its API over `dir`'s clips, writing
+/// `dir/labels.json`. Its paths are relative, so it can be served under a
+/// prefix ending in `/`.
+pub fn router(dir: &std::path::Path) -> Result<Router, String> {
+    let session = tracker::DataDir::open(dir).map_err(|e| e.to_string())?;
     let file = session.dir.join("labels.json");
     let labels = read_labels(&file)?;
     let state = Arc::new(Mutex::new(LabelState {
@@ -87,7 +99,7 @@ pub async fn label(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
         labels,
         cached: None,
     }));
-    let app = Router::new()
+    Ok(Router::new()
         .route("/", get(index))
         .route("/api/session", get(session_api))
         .route("/api/clips/{id}", get(clip_api))
@@ -96,12 +108,23 @@ pub async fn label(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
         .route("/api/tracks/review", post(review_track))
         .route("/api/labels", get(labels_api).post(save_label))
         .route("/api/empty_clips", post(save_empty_clip))
-        .with_state(state);
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .map_err(|e| e.to_string())?;
-    println!("http://{bind}");
-    axum::serve(listener, app).await.map_err(|e| e.to_string())
+        .with_state(state))
+}
+
+/// How many clips in `dir/labels.json` have any label, verdict, or empty
+/// mark; zero when there is no file.
+pub fn reviewed_clips(dir: &std::path::Path) -> Result<usize, String> {
+    let labels = read_labels(&dir.join("labels.json"))?;
+    let mut clips: Vec<&str> = labels
+        .marks
+        .iter()
+        .map(|m| m.clip.as_str())
+        .chain(labels.empty_clips.iter().map(String::as_str))
+        .chain(labels.reviewed_tracks.iter().map(|r| r.clip.as_str()))
+        .collect();
+    clips.sort_unstable();
+    clips.dedup();
+    Ok(clips.len())
 }
 
 fn read_labels(path: &std::path::Path) -> Result<LabelFile, String> {
@@ -501,6 +524,20 @@ mod tests {
         assert_eq!(labels.marks, vec![ball(9, 5.0)]);
         assert_eq!(labels.reviewed_tracks.len(), 1);
         assert_eq!(labels.reviewed_tracks[0].verdict, "reject");
+    }
+
+    #[test]
+    fn reviewed_clips_counts_each_clip_once() {
+        let dir = std::env::temp_dir().join(format!("label-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(reviewed_clips(&dir).unwrap(), 0);
+        std::fs::write(
+            dir.join("labels.json"),
+            r#"{"box_px":32,"marks":[{"clip":"0001","index":0,"kind":"ball","cx":1,"cy":1},{"clip":"0001","index":1,"kind":"empty","cx":null,"cy":null}],"empty_clips":["0002","0003"],"reviewed_tracks":[{"clip":"0003","start":0,"end":4,"cx":1,"cy":1,"verdict":"reject"},{"clip":"0004","start":0,"end":4,"cx":1,"cy":1,"verdict":"ball"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(reviewed_clips(&dir).unwrap(), 4);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -68,7 +68,7 @@ async function show(index) {
   i = Math.max(0, Math.min(n - 1, index));
   scrub.value = String(i);
   idxEl.textContent = i + " / " + (n - 1);
-  const r = await fetch("/api/clips/" + clipId + "/frame/" + i, { cache: "no-store" });
+  const r = await fetch("api/clips/" + clipId + "/frame/" + i, { cache: "no-store" });
   if (!r.ok) return;
   const blob = await r.blob();
   const bmp = await createImageBitmap(blob);
@@ -97,7 +97,7 @@ function renderHit() {
 async function selectClip(id) {
   playing = false;
   clipId = id;
-  clip = await (await fetch("/api/clips/" + id)).json();
+  clip = await (await fetch("api/clips/" + id)).json();
   n = (clip.meta && clip.meta.frames) || 0;
   scrub.max = String(Math.max(0, n - 1));
   [...clipsEl.children].forEach((b) => b.classList.toggle("on", b.dataset.id === id));
@@ -105,7 +105,7 @@ async function selectClip(id) {
   await show(0);
 }
 async function boot() {
-  session = await (await fetch("/api/session")).json();
+  session = await (await fetch("api/session")).json();
   fps = (session.config && session.config.capture && session.config.capture.fps) || 30;
   for (const id of session.clips || []) {
     const b = document.createElement("button");

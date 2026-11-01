@@ -12,6 +12,8 @@ use ultralytics_inference::{InferenceConfig, Quantization, YOLOModel};
 pub struct Detector {
     yolo: YOLOModel,
     provider: &'static str,
+    /// SHA-1 of the model file.
+    hash: String,
 }
 
 /// One frame as the detector needs it. `depth` is a saved depth map, used
@@ -46,11 +48,19 @@ impl Detector {
                 .map_err(|e| format!("{}: {e}", cache.display()))?;
         }
         println!("detector {model} on {provider}");
-        Ok(Self { yolo, provider })
+        Ok(Self {
+            yolo,
+            provider,
+            hash,
+        })
     }
 
     pub fn provider(&self) -> &str {
         self.provider
+    }
+
+    pub fn model_hash(&self) -> &str {
+        &self.hash
     }
 
     pub fn detect(&mut self, frame: &FrameView) -> Result<Vec<BallBox>, String> {

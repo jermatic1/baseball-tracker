@@ -271,6 +271,7 @@ pub(crate) mod server {
         hub: Arc<Hub>,
     ) -> Result<(), String> {
         let stopping = Arc::new(AtomicBool::new(false));
+        let root = session.dir.clone();
         let state = Arc::new(Mutex::new(CaptureState {
             latest: None,
             stats: None,
@@ -316,7 +317,8 @@ pub(crate) mod server {
             .route("/games", get(games))
             .route("/games/{name}", get(game_page))
             .route("/ws", get(ws))
-            .with_state(app);
+            .with_state(app.clone())
+            .merge(crate::sessions::router(root, Arc::clone(&app.hub)));
         let addr: SocketAddr = BIND
             .parse()
             .map_err(|e: std::net::AddrParseError| e.to_string())?;
@@ -613,6 +615,7 @@ pub(crate) mod server {
                 if let Some(v) = ir_dot {
                     st.ir_dot = v.clamp(0.0, 1.0);
                 }
+                app.hub.set_controls(st.exposure_us, st.gain);
                 Ok(())
             }
             ClientMsg::Record { action } => match action {

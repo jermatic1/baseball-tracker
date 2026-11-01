@@ -17,6 +17,7 @@ mod protocol;
 #[cfg(feature = "detect")]
 mod replay;
 mod review;
+mod sessions;
 #[cfg(feature = "detect")]
 mod watch;
 

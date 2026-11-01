@@ -5,7 +5,7 @@
 //! client is connected.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -53,6 +53,12 @@ pub async fn watch(
     let session = DataDir::create(&path).map_err(|e| e.to_string())?;
     let detector = Detector::load(&model)?;
     let hub = Hub::open(session.clone())?;
+    hub.set_model(tracker::ModelInfo {
+        file: Path::new(&model)
+            .file_name()
+            .map_or(model.clone(), |n| n.to_string_lossy().into_owned()),
+        sha1: detector.model_hash().to_string(),
+    });
     #[cfg(feature = "challenges")]
     hub.register(Box::new(challenges::Challenges::load(&session.dir)?));
     let status = Arc::new(Mutex::new(LiveStatus {

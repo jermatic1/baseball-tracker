@@ -14,33 +14,55 @@ use crate::jpeg::encode_gray_jpeg;
 
 struct ReviewState {
     session: tracker::DataDir,
-    hits: Vec<tracker::HitRecord>,
+    /// Recomputed once at start, or `None` to read the hits file on each
+    /// request so a session still being recorded stays current.
+    hits: Option<Vec<tracker::HitRecord>>,
     cached: Option<(String, tracker::Clip)>,
+}
+
+impl ReviewState {
+    fn hits(&self) -> Result<Vec<tracker::HitRecord>, String> {
+        match &self.hits {
+            Some(hits) => Ok(hits.clone()),
+            None => self.session.hits().map_err(|e| e.to_string()),
+        }
+    }
 }
 
 pub async fn review(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
     let session = tracker::DataDir::open(&path).map_err(|e| e.to_string())?;
     let hits = tracker::recompute_hits(&session).map_err(|e| e.to_string())?;
-    session.write_hits(&hits).map_err(|e| e.to_string())?;
     for hit in &hits {
         print_hit(hit);
     }
-    let state = Arc::new(Mutex::new(ReviewState {
-        session,
-        hits,
-        cached: None,
-    }));
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/api/session", get(session_api))
-        .route("/api/clips/{id}", get(clip_api))
-        .route("/api/clips/{id}/frame/{index}", get(frame_api))
-        .with_state(state);
+    let app = router(session, Some(hits));
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|e| e.to_string())?;
     println!("http://{bind}");
     axum::serve(listener, app).await.map_err(|e| e.to_string())
+}
+
+/// The playback page and its API over `dir`'s clips, reading the events the
+/// live path filed. It only reads, so it is safe beside a running capture,
+/// and its paths are relative so it can be served under a prefix ending in `/`.
+pub fn live_router(dir: &std::path::Path) -> Result<Router, String> {
+    let session = tracker::DataDir::open(dir).map_err(|e| e.to_string())?;
+    Ok(router(session, None))
+}
+
+fn router(session: tracker::DataDir, hits: Option<Vec<tracker::HitRecord>>) -> Router {
+    let state = Arc::new(Mutex::new(ReviewState {
+        session,
+        hits,
+        cached: None,
+    }));
+    Router::new()
+        .route("/", get(index))
+        .route("/api/session", get(session_api))
+        .route("/api/clips/{id}", get(clip_api))
+        .route("/api/clips/{id}/frame/{index}", get(frame_api))
+        .with_state(state)
 }
 
 async fn index() -> Html<&'static str> {
@@ -52,7 +74,7 @@ async fn session_api(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let st = state.lock().map_err(|e| e.to_string())?;
     let clips = st.session.clip_ids().map_err(|e| e.to_string())?;
-    let hits: Vec<_> = st.hits.iter().map(hit_json).collect();
+    let hits: Vec<_> = st.hits()?.iter().map(hit_json).collect();
     Ok(Json(serde_json::json!({
         "clips": clips,
         "hits": hits,
@@ -79,14 +101,9 @@ async fn clip_api(
         "sequence_gaps": clip.meta.sequence_gaps,
     });
     let detections = st.session.load_detections(&id).ok();
-    let events: Vec<_> = st
-        .hits
-        .iter()
-        .filter(|h| h.clip == id)
-        .map(hit_json)
-        .collect();
-    let hit = st
-        .hits
+    let all = st.hits()?;
+    let events: Vec<_> = all.iter().filter(|h| h.clip == id).map(hit_json).collect();
+    let hit = all
         .iter()
         .find(|h| h.clip == id && h.kind == tracker::EventKind::Hit)
         .map(hit_json);
