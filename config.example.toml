@@ -11,14 +11,20 @@ fps = 100
 exposure = 600
 gain = 1600
 
-# Camera pose relative to the plate. Calibrate writes this; the numbers here
-# are a camera beside the plate on the left-field side looking across it.
+# Camera pose relative to the apex of the plate, the point at the back.
+# Calibrate writes this; do not measure it by hand. These numbers are a level
+# camera beside the ball path, 68 in to the first-base side, 34 in up, facing
+# straight across with its centre line 31 in in front of the plate's front
+# edge. distance is along the ground from the apex to the spot under the lens;
+# lateral is positive on the first-base side. The angles are offsets from the
+# line to the apex, not tilt from level: positive pitch tilts up, positive yaw
+# turns the camera to its left (toward the catcher from the first-base side).
 [mount]
-distance = 5.71
-height = 2.95
-lateral = -5.28
-pitch = 30.5
-yaw = 23.0
+distance = 6.94
+height = 2.83
+lateral = 5.67
+pitch = 22.0
+yaw = -35.2
 
 [stereo]
 # Only for sessions recorded without the camera's saved calibration: the

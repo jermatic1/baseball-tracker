@@ -3813,6 +3813,7 @@ dependencies = [
 name = "tracker"
 version = "0.1.0"
 dependencies = [
+ "image",
  "rusqlite",
  "serde",
  "serde_json",

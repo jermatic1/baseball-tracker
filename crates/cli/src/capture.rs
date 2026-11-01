@@ -163,13 +163,15 @@ pub(crate) mod server {
     use futures_util::{SinkExt, StreamExt};
     use tokio::sync::broadcast::error::RecvError;
     use tokio::sync::watch;
-    use tracker::plate::{PlateCorners, PoseFit};
+    use tracker::geom::Intrinsics;
+    use tracker::plate::{check_fit, solve_pose, window_depth_m, PlateCorners, PoseFit};
 
     use crate::convert::to_stored;
     use crate::hub::{Hub, Outbound};
     use crate::jpeg::encode_gray_jpeg;
     use crate::protocol::{
-        CalibrateAction, CameraStats, ClientMsg, LiveStatus, RecordAction, ServerMsg, Status,
+        CalibrateAction, CameraStats, ClientMsg, FitSource, LiveStatus, RecordAction, ServerMsg,
+        Status,
     };
 
     const BIND: &str = "0.0.0.0:7880";
@@ -190,7 +192,39 @@ pub(crate) mod server {
         pub stop: Arc<AtomicBool>,
     }
 
-    type Fit = (PlateCorners, PoseFit);
+    /// A plate fit with where its corners came from and what looks wrong.
+    #[derive(Clone)]
+    struct Fit {
+        corners: PlateCorners,
+        pose: PoseFit,
+        source: FitSource,
+        warnings: Vec<String>,
+    }
+
+    impl Fit {
+        fn checked(
+            corners: PlateCorners,
+            pose: PoseFit,
+            source: FitSource,
+            frame: &tracker::StoredFrame,
+        ) -> Self {
+            let intr = Intrinsics::from_fov(frame.width, frame.height, 80.0, 55.0);
+            let depth = |px| window_depth_m(&frame.depth_mm, frame.width, frame.height, px);
+            let has_depth = !frame.depth_mm.is_empty();
+            let warnings = check_fit(
+                &pose,
+                &corners,
+                &intr,
+                has_depth.then_some(&depth as &dyn Fn((f64, f64)) -> Option<f64>),
+            );
+            Self {
+                corners,
+                pose,
+                source,
+                warnings,
+            }
+        }
+    }
 
     struct CaptureState {
         latest: Option<Arc<tracker::StoredFrame>>,
@@ -206,8 +240,17 @@ pub(crate) mod server {
         record_done: Option<Receiver<Result<String, String>>>,
         live: Option<LiveTap>,
         stop: Arc<AtomicBool>,
-        /// Latest good plate fit while calibration mode is on.
+        /// Latest plate fit while calibration mode is on: the auto-detector's
+        /// good fits until the user sends clicked corners.
         last_fit: Option<Fit>,
+    }
+
+    impl CaptureState {
+        fn has_clicked_fit(&self) -> bool {
+            self.last_fit
+                .as_ref()
+                .is_some_and(|f| f.source == FitSource::Clicked)
+        }
     }
 
     #[derive(Clone)]
@@ -579,7 +622,7 @@ pub(crate) mod server {
                 }
                 RecordAction::Stop => stop_record(app).await.map(|id| println!("saved clip {id}")),
             },
-            ClientMsg::Calibrate { action } => match action {
+            ClientMsg::Calibrate { action, corners } => match action {
                 CalibrateAction::Start => {
                     if let Ok(mut st) = app.state.lock() {
                         st.last_fit = None;
@@ -592,6 +635,7 @@ pub(crate) mod server {
                     Ok(())
                 }
                 CalibrateAction::Apply => apply_calibration(app),
+                CalibrateAction::Corners => clicked_calibration(app, corners).await,
             },
         }
     }
@@ -637,18 +681,44 @@ pub(crate) mod server {
             let st = app.state.lock().map_err(|e| e.to_string())?;
             (st.last_fit.clone(), st.session.dir.clone())
         };
-        let fit = fit.ok_or("no plate fit yet; keep the plate clear")?;
+        let fit = fit.ok_or("no plate fit yet; keep the plate clear or click its corners")?;
         let config = {
             let mut cfg = app.hub.config.write().map_err(|e| e.to_string())?;
-            cfg.mount = fit.1.mount.clone();
+            cfg.mount = fit.pose.mount.clone();
             cfg.clone()
         };
         config
             .save(dir.join("config.toml"))
             .map_err(|e| e.to_string())?;
-        crate::calibrate::print_fit(&fit.1);
+        crate::calibrate::print_fit(&fit.pose);
         app.hub.send(&calibration_msg(Some(&fit), true));
         app.hub.set_calibrating(false);
+        Ok(())
+    }
+
+    /// Fit the pose to the user's clicked corners, seeded by the configured
+    /// mount, and keep it for Apply even when it has warnings.
+    async fn clicked_calibration(app: &App, corners: Option<Vec<[f64; 2]>>) -> Result<(), String> {
+        let px: [[f64; 2]; 5] = corners
+            .ok_or("corners missing")?
+            .try_into()
+            .map_err(|_| "need five corners")?;
+        let corners = PlateCorners {
+            px: px.map(|[x, y]| (x, y)),
+        };
+        let frame = app.state.lock().map_err(|e| e.to_string())?.latest.clone();
+        let frame = frame.ok_or("no frame yet")?;
+        let seed = app.hub.config().mount;
+        let fit = tokio::task::spawn_blocking(move || {
+            let intr = Intrinsics::from_fov(frame.width, frame.height, 80.0, 55.0);
+            solve_pose(&corners, &intr, &seed)
+                .map(|pose| Fit::checked(corners, pose, FitSource::Clicked, &frame))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no pose fits those corners")?;
+        app.state.lock().map_err(|e| e.to_string())?.last_fit = Some(fit.clone());
+        app.hub.send(&calibration_msg(Some(&fit), false));
         Ok(())
     }
 
@@ -656,11 +726,13 @@ pub(crate) mod server {
         let pts = |p: &[(f64, f64); 5]| p.iter().map(|&(x, y)| [x, y]).collect::<Vec<_>>();
         ServerMsg::Calibration {
             found: fit.is_some(),
-            corners: fit.map(|(c, _)| pts(&c.px)),
-            reprojected: fit.map(|(_, f)| pts(&f.reprojected)),
-            rms: fit.map(|(_, f)| f.rms_px),
-            mount: fit.map(|(_, f)| f.mount.clone()),
+            corners: fit.map(|f| pts(&f.corners.px)),
+            reprojected: fit.map(|f| pts(&f.pose.reprojected)),
+            rms: fit.map(|f| f.pose.rms_px),
+            mount: fit.map(|f| f.pose.mount.clone()),
             applied,
+            source: fit.map_or(FitSource::Auto, |f| f.source),
+            warnings: fit.map(|f| f.warnings.clone()).unwrap_or_default(),
         }
     }
 
@@ -717,11 +789,11 @@ pub(crate) mod server {
     }
 
     /// In calibration mode, fit the plate on the live frame a few times a
-    /// second and tell clients what it sees.
+    /// second and tell clients what it sees, until the user clicks corners.
     async fn calibration_sampler(app: App, stop: Arc<AtomicBool>) {
         while !stop.load(Ordering::Relaxed) {
             tokio::time::sleep(CALIBRATION_PERIOD).await;
-            if !app.hub.calibrating() {
+            if !app.hub.calibrating() || app.state.lock().is_ok_and(|st| st.has_clicked_fit()) {
                 continue;
             }
             let frame = app.state.lock().ok().and_then(|st| st.latest.clone());
@@ -729,15 +801,19 @@ pub(crate) mod server {
             let cfg = app.hub.config();
             let fit = tokio::task::spawn_blocking(move || {
                 tracker::plate::calibrate_from_frame(&frame.left, frame.width, frame.height, &cfg)
+                    .map(|(corners, pose)| Fit::checked(corners, pose, FitSource::Auto, &frame))
             })
             .await
             .ok()
             .flatten();
-            if fit.is_some() {
-                if let Ok(mut st) = app.state.lock() {
-                    st.last_fit = fit.clone();
-                }
+            let Ok(mut st) = app.state.lock() else { break };
+            if st.has_clicked_fit() {
+                continue;
             }
+            if fit.is_some() {
+                st.last_fit = fit.clone();
+            }
+            drop(st);
             app.hub.send(&calibration_msg(fit.as_ref(), false));
         }
     }

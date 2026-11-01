@@ -104,6 +104,9 @@ fn rodrigues(v: [f64; 3], axis: [f64; 3], rad: f64) -> [f64; 3] {
     add(add(scale(v, c), scale(kxv, s)), scale(k, kdv * (1.0 - c)))
 }
 
+/// Camera basis in field space: x right, y down, z forward (right-handed).
+/// Yaw rotates about +Y, so positive yaw turns the camera to its left
+/// (counter-clockwise seen from above); pitch tilts it up.
 fn camera_pose(mount: &MountConfig) -> Pose {
     // field: +X RF, +Y up, -Z CF
     let lat = metres(mount.lateral);
@@ -121,14 +124,14 @@ fn camera_pose(mount: &MountConfig) -> Pose {
     look = rotate_y(look, mount.yaw.to_radians());
 
     let world_up = [0.0, 1.0, 0.0];
-    let mut right = cross(world_up, look);
+    let mut right = cross(look, world_up);
     if norm(right) < 1e-9 {
-        right = cross([0.0, 0.0, 1.0], look);
+        right = cross(look, [0.0, 0.0, -1.0]);
     }
     right = normalize(right);
 
-    look = normalize(rodrigues(look, right, -mount.pitch.to_radians()));
-    let down = normalize(cross(right, look));
+    look = normalize(rodrigues(look, right, mount.pitch.to_radians()));
+    let down = normalize(cross(look, right));
     Pose {
         pos,
         right,
@@ -137,27 +140,18 @@ fn camera_pose(mount: &MountConfig) -> Pose {
     }
 }
 
-/// Field +X must point toward right field whichever side the camera is on.
-fn needs_x_flip(mount: &MountConfig) -> bool {
-    camera_pose(mount).forward[0] <= 0.0
-}
-
 pub fn unproject(u: f64, v: f64, depth_m: f64, intr: &Intrinsics, mount: &MountConfig) -> [f64; 3] {
     let pose = camera_pose(mount);
     let z = depth_m;
     let xc = (u - intr.cx) * z / intr.fx;
     let yc = (v - intr.cy) * z / intr.fy;
-    let mut p = add(
+    add(
         pose.pos,
         add(
             add(scale(pose.right, xc), scale(pose.down, yc)),
             scale(pose.forward, z),
         ),
-    );
-    if needs_x_flip(mount) {
-        p[0] = -p[0];
-    }
-    p
+    )
 }
 
 pub fn project(
@@ -166,11 +160,7 @@ pub fn project(
     mount: &MountConfig,
 ) -> Option<(f64, f64, f64)> {
     let pose = camera_pose(mount);
-    let mut p = p_field;
-    if needs_x_flip(mount) {
-        p[0] = -p[0];
-    }
-    let d = sub(p, pose.pos);
+    let d = sub(p_field, pose.pos);
     let xc = dot(pose.right, d);
     let yc = dot(pose.down, d);
     let zc = dot(pose.forward, d);
@@ -298,4 +288,126 @@ pub fn field_point(start: [f64; 3], vel: [f64; 3], t: f64) -> [f64; 3] {
         start[1] + vel[1] * t - 0.5 * G * t * t,
         start[2] + vel[2] * t,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn intr() -> Intrinsics {
+        Intrinsics::from_fov(640, 400, 80.0, 55.0)
+    }
+
+    /// Level camera 68 in to the first-base side (or the third-base side
+    /// when `side` is -1), facing straight across the ball path.
+    fn beside(side: f64) -> MountConfig {
+        MountConfig {
+            distance: 6.94,
+            height: 2.83,
+            lateral: side * 5.67,
+            pitch: 22.0,
+            yaw: side * -35.2,
+        }
+    }
+
+    #[test]
+    fn first_base_camera_sees_the_plate_left_and_the_pitcher_right() {
+        let (intr, mount) = (intr(), beside(1.0));
+        let (apex_u, _, _) = project([0.0, 0.0, 0.0], &intr, &mount).unwrap();
+        let (pitcher_u, _, z) = project([0.0, 0.0, -3.0], &intr, &mount).unwrap();
+        assert!(apex_u < intr.cx, "apex at u={apex_u}");
+        assert!(
+            pitcher_u > intr.cx && z > 0.0,
+            "pitcher side at u={pitcher_u}"
+        );
+    }
+
+    #[test]
+    fn third_base_camera_sees_the_plate_right() {
+        let (intr, mount) = (intr(), beside(-1.0));
+        let (apex_u, _, _) = project([0.0, 0.0, 0.0], &intr, &mount).unwrap();
+        assert!(apex_u > intr.cx, "apex at u={apex_u}");
+    }
+
+    #[test]
+    fn point_ahead_projects_to_the_centre() {
+        let intr = intr();
+        for side in [1.0, -1.0] {
+            let mount = beside(side);
+            let ahead = unproject(intr.cx, intr.cy, 2.0, &intr, &mount);
+            let (u, v, z) = project(ahead, &intr, &mount).unwrap();
+            assert!((u - intr.cx).abs() < 1e-9 && (v - intr.cy).abs() < 1e-9);
+            assert!((z - 2.0).abs() < 1e-9);
+        }
+        let mount = MountConfig {
+            distance: 6.94,
+            height: 0.0,
+            lateral: 5.67,
+            pitch: 0.0,
+            yaw: 0.0,
+        };
+        let (u, v, _) = project([0.0, 0.0, 0.0], &intr, &mount).unwrap();
+        assert!((u - intr.cx).abs() < 1e-9 && (v - intr.cy).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unproject_inverts_project() {
+        let intr = intr();
+        for side in [1.0, -1.0] {
+            let mount = beside(side);
+            let p = [0.3, 0.8, -1.2];
+            let (u, v, z) = project(p, &intr, &mount).unwrap();
+            let q = unproject(u, v, z, &intr, &mount);
+            assert!(norm(sub(p, q)) < 1e-9, "{p:?} -> {q:?}");
+        }
+    }
+
+    #[test]
+    fn spray_follows_field_x_from_either_side() {
+        let intr = intr();
+        for side in [1.0, -1.0] {
+            let mount = beside(side);
+            // A ball at the image centre moving away from (or toward) a
+            // camera that faces across the field: from first base, away is
+            // toward third (-X); from third base, away is toward first (+X).
+            for away in [1.0, -1.0] {
+                let samples: Vec<Sample> = (0..5)
+                    .map(|i| {
+                        let t = i as f64 * 0.01;
+                        let depth = 2.0 + away * 10.0 * t;
+                        let [x, y, z] = unproject(intr.cx, intr.cy, depth, &intr, &mount);
+                        Sample {
+                            t_ns: (t * 1e9) as u64,
+                            x,
+                            y,
+                            z,
+                        }
+                    })
+                    .collect();
+                let spray = fit_samples(&samples).unwrap().spray_angle;
+                let expected = -side * away * 90.0;
+                assert!(
+                    (spray - expected).abs() < 1.0,
+                    "side {side} away {away}: spray {spray}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn positive_yaw_turns_the_camera_left() {
+        let intr = intr();
+        let level = MountConfig {
+            pitch: 0.0,
+            yaw: 0.0,
+            ..beside(1.0)
+        };
+        let turned = MountConfig {
+            yaw: 10.0,
+            ..level.clone()
+        };
+        let (u0, _, _) = project([0.0, 0.0, 0.0], &intr, &level).unwrap();
+        let (u1, _, _) = project([0.0, 0.0, 0.0], &intr, &turned).unwrap();
+        assert!(u1 > u0, "apex moved from {u0} to {u1}");
+    }
 }

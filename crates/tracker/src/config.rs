@@ -17,7 +17,9 @@ pub struct CaptureConfig {
     pub gain: u32,
 }
 
-/// Camera pose relative to the plate apex.
+/// Camera pose relative to the plate apex. `lateral` is positive on the
+/// first-base side; `pitch` and `yaw` are offsets from the line to the apex,
+/// positive tilting up and turning the camera to its left.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MountConfig {
     pub distance: f64,
@@ -169,11 +171,11 @@ impl Config {
                 gain: 1600,
             },
             mount: MountConfig {
-                distance: 5.71,
-                height: 2.95,
-                lateral: -5.28,
-                pitch: 30.5,
-                yaw: 23.0,
+                distance: 6.94,
+                height: 2.83,
+                lateral: 5.67,
+                pitch: 22.0,
+                yaw: -35.2,
             },
             stereo: StereoConfig {
                 disparity_offset: 17.1,
