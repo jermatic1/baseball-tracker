@@ -660,6 +660,7 @@ dependencies = [
  "ort",
  "serde",
  "serde_json",
+ "sha1",
  "tokio",
  "tracker",
  "ultralytics-inference",
