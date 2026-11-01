@@ -18,6 +18,7 @@ mod protocol;
 mod replay;
 mod review;
 mod sessions;
+mod train;
 #[cfg(feature = "detect")]
 mod watch;
 
@@ -31,6 +32,9 @@ use capture::capture;
 use convert::print_estimate;
 use label::label;
 use review::review;
+
+/// The model the tracker loads and the Train page replaces.
+const DEFAULT_MODEL: &str = "models/ball.onnx";
 
 #[derive(Parser)]
 #[command(name = "tracker")]
@@ -67,7 +71,7 @@ enum Command {
     },
     Detect {
         data: PathBuf,
-        #[arg(long, default_value = "models/ball.onnx")]
+        #[arg(long, default_value = DEFAULT_MODEL)]
         model: String,
         #[arg(long)]
         clip: Option<String>,
@@ -79,13 +83,16 @@ enum Command {
         /// Seconds between made-up events.
         #[arg(long, default_value_t = 4.0)]
         period: f64,
+        /// Where the Train page promotes a new model to.
+        #[arg(long, default_value = DEFAULT_MODEL)]
+        model: PathBuf,
     },
     /// Track live: serve the socket, and while a client is
     /// connected find the ball in every frame, measure each hit or throw,
     /// broadcast it, and save the clip.
     Watch {
         data: PathBuf,
-        #[arg(long, default_value = "models/ball.onnx")]
+        #[arg(long, default_value = DEFAULT_MODEL)]
         model: String,
         /// Replay recorded clips instead of opening the camera.
         #[arg(long)]
@@ -118,7 +125,11 @@ async fn run() -> Result<(), String> {
         Command::Label { data, bind } => label(data, bind).await,
         Command::Synth { data } => synth(data),
         Command::Detect { data, model, clip } => detect(data, model, clip).await,
-        Command::Mock { data, period } => mock::mock(data, period).await,
+        Command::Mock {
+            data,
+            period,
+            model,
+        } => mock::mock(data, period, model).await,
         Command::Watch {
             data,
             model,

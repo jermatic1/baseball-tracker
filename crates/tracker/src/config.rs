@@ -142,6 +142,13 @@ impl Default for FlightConfig {
     }
 }
 
+/// Where the Train page sends datasets. Empty means no server.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrainingConfig {
+    /// Base URL of the training server, e.g. `http://gpu-box:7882`.
+    pub server: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub capture: CaptureConfig,
@@ -158,6 +165,8 @@ pub struct Config {
     pub flight: FlightConfig,
     #[serde(default)]
     pub zone: ZoneConfig,
+    #[serde(default)]
+    pub training: TrainingConfig,
 }
 
 impl Config {
@@ -185,6 +194,7 @@ impl Config {
             pitching: PitchingConfig::default(),
             flight: FlightConfig::default(),
             zone: ZoneConfig::default(),
+            training: TrainingConfig::default(),
         }
     }
 

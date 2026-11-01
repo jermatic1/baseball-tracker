@@ -1,5 +1,6 @@
 pub mod clips;
 pub mod config;
+pub mod dataset;
 pub mod flight;
 pub mod game;
 pub mod geom;
@@ -20,7 +21,8 @@ pub use clips::{
     EventKind, HitFlight, HitRecord, HitType, Landing, Location, PitchPlate, StoredFrame,
 };
 pub use config::{
-    CaptureConfig, Config, FlightConfig, MountConfig, PitchingConfig, WatchConfig, ZoneConfig,
+    CaptureConfig, Config, FlightConfig, MountConfig, PitchingConfig, TrainingConfig, WatchConfig,
+    ZoneConfig,
 };
 pub use game::Game;
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};

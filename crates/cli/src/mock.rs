@@ -17,7 +17,7 @@ use tracker::{
 use crate::capture::server;
 use crate::hub::Hub;
 
-pub async fn mock(path: PathBuf, period: f64) -> Result<(), String> {
+pub async fn mock(path: PathBuf, period: f64, model: PathBuf) -> Result<(), String> {
     let data = DataDir::create(&path).map_err(|e| e.to_string())?;
     let store = Store::open(data.dir.join("tracker.db")).map_err(|e| e.to_string())?;
     seed(&store)?;
@@ -30,7 +30,7 @@ pub async fn mock(path: PathBuf, period: f64) -> Result<(), String> {
     let calib = crate::capture::stereo_calib(&data, None);
     let generator = tokio::spawn(generate(Arc::clone(&hub), Duration::from_secs_f64(period)));
     println!("mock tracker: an event every {period} s while a client is connected");
-    let result = server::run(data, cam, c.exposure, c.gain, calib, None, hub).await;
+    let result = server::run(data, cam, c.exposure, c.gain, calib, None, hub, model).await;
     generator.abort();
     result
 }

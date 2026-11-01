@@ -97,7 +97,8 @@ async fn capture_oak(path: PathBuf) -> Result<(), String> {
     let gain = session.config.capture.gain;
     let (cam, calib) = open_oak(&session)?;
     let hub = crate::hub::Hub::open(session.clone())?;
-    server::run(session, cam, exposure_us, gain, calib, None, hub).await
+    let model = crate::DEFAULT_MODEL.into();
+    server::run(session, cam, exposure_us, gain, calib, None, hub, model).await
 }
 
 /// Open the OAK at the session's capture settings and save its calibration
@@ -149,6 +150,7 @@ pub(crate) fn stereo_calib(
 
 pub(crate) mod server {
     use std::net::SocketAddr;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::sync::{Arc, Mutex};
@@ -269,9 +271,11 @@ pub(crate) mod server {
         calib: tracker::StereoCalib,
         live: Option<LiveTap>,
         hub: Arc<Hub>,
+        model: PathBuf,
     ) -> Result<(), String> {
         let stopping = Arc::new(AtomicBool::new(false));
         let root = session.dir.clone();
+        let trainer = crate::train::router(root.clone(), &session.config.training.server, model);
         let state = Arc::new(Mutex::new(CaptureState {
             latest: None,
             stats: None,
@@ -318,7 +322,8 @@ pub(crate) mod server {
             .route("/games/{name}", get(game_page))
             .route("/ws", get(ws))
             .with_state(app.clone())
-            .merge(crate::sessions::router(root, Arc::clone(&app.hub)));
+            .merge(crate::sessions::router(root, Arc::clone(&app.hub)))
+            .merge(trainer);
         let addr: SocketAddr = BIND
             .parse()
             .map_err(|e: std::net::AddrParseError| e.to_string())?;

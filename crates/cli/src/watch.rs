@@ -101,7 +101,17 @@ pub async fn watch(
             let calib = crate::capture::stereo_calib(&session, device_json.as_deref());
             let cam = crate::replay::ClipCamera::open(&source, Duration::from_secs_f64(gap))?;
             let worker = spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
-            server::run(session, cam, c.exposure, c.gain, calib, Some(tap), hub).await?;
+            server::run(
+                session,
+                cam,
+                c.exposure,
+                c.gain,
+                calib,
+                Some(tap),
+                hub,
+                model.into(),
+            )
+            .await?;
             worker
         }
         None => {
@@ -114,7 +124,17 @@ pub async fn watch(
             {
                 let (cam, calib) = crate::capture::open_oak(&session)?;
                 let worker = spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
-                server::run(session, cam, c.exposure, c.gain, calib, Some(tap), hub).await?;
+                server::run(
+                    session,
+                    cam,
+                    c.exposure,
+                    c.gain,
+                    calib,
+                    Some(tap),
+                    hub,
+                    model.into(),
+                )
+                .await?;
                 worker
             }
         }

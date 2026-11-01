@@ -11,3 +11,4 @@
 /opencode.json
 *.pt
 /runs/
+__pycache__/

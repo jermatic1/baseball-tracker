@@ -7,7 +7,7 @@ Tracker is a real-time hitting data system. It measures exit velocity, launch an
 - Luxonis OAK-D (RVC2) on a USB 3 port.
 - Linux on x86_64, or a Jetson Orin Nano with JetPack 7.
 - A home plate in view of the camera. A batter's box mat with an integrated plate works.
-- To train the ball detector: a CUDA or ROCm GPU.
+- To train the ball detector: a machine with a CUDA or ROCm GPU.
 
 ## Install
 
@@ -54,9 +54,11 @@ Everything lives in a data directory, `data` by default: the config, the calibra
 
 1. **Run.** `task run`, or `./tracker watch data` with the prebuilt executable, serves the pages on port 7880. The tracker page is at `/` and the camera setup page at `/setup`.
 2. **Calibrate, once per camera placement.** With the plate clear, click Calibrate on the setup page, or click the plate's five corners on the preview. The page warns in red when the fit looks wrong.
-3. **Train the detector, once.** On a session's label page, accept or reject each clip's ball tracks, pressing `e` on a clip with no ball in it. `task train` writes `models/ball.onnx`, which loads on start.
+3. **Train the detector, once.** On a session's label page, accept or reject each clip's ball tracks, pressing `e` on a clip with no ball in it. Mark the session to include on the sessions page, press Train on `/train`, and press Promote when the new model scores better. A restart loads the new model.
 4. **Hit.** Add a user on the tracker page and start a session. Every moving ball is measured, sent to the connected simulators, and saved as a clip. A ball resting on the tee is ignored.
 5. **Review.** The sessions page at `/sessions` lists every session with a playback page that plays each clip with detections drawn and lists its events.
+
+Training runs on a training server: `task train-server` on a machine with a GPU, with its address in the config under `[training]`.
 
 `task mock` serves the same pages with no camera and made-up hits, and `task replay FROM=data/sessions/3` plays a session back through the live path.
 

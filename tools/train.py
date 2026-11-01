@@ -2,7 +2,8 @@
 
 Reads <data>/labels.json written by `tracker label` from one or more data
 directories and trains on them together. Clips listed in `empty_clips` give
-background frames with no ball.
+background frames with no ball. `--dataset <dir>` trains on a prebuilt YOLO
+dataset (<dir>/data.yaml) instead.
 Python is only this export step. The tracker loads the ONNX.
 """
 
@@ -89,6 +90,10 @@ def self_test():
         (clip_dir / "detections.json").write_text(json.dumps({"frames": frames}))
         picked = empty_clip_frames(clip_dir, 200)
         assert len(picked) == EMPTY_CLIP_CAP and all(k % 2 for k in picked), picked
+        (clip_dir / "data.yaml").write_text("path: /elsewhere/train\ntrain: images/train\n")
+        data = use_dataset(clip_dir)
+        lines = data.read_text().splitlines()
+        assert lines == [f"path: {clip_dir.resolve()}", "train: images/train"], lines
 
 
 def even_sample(items, cap):
@@ -217,7 +222,39 @@ def build_dataset(sessions):
     return data, len(train), len(val)
 
 
-def best_weights(session, trainer=None):
+def use_dataset(root):
+    """Point a prebuilt dataset's data.yaml at where it now lives."""
+    data = root / "data.yaml"
+    if not data.is_file():
+        raise SystemExit(f"no data.yaml in {root}")
+    lines = [line for line in data.read_text().splitlines() if not line.startswith("path:")]
+    data.write_text("\n".join([f"path: {root.resolve()}", *lines]) + "\n")
+    return data
+
+
+def fit(data, epochs, imgsz, project, device=None):
+    """Fine-tune YOLO26n on data.yaml under <project>/run; returns best.pt and
+    the number of epochs run."""
+    try:
+        from ultralytics import YOLO
+    except ImportError as exc:
+        raise SystemExit(f"cannot import ultralytics from {sys.executable}: {exc}") from exc
+    model = YOLO("yolo26n.pt")
+    extra = {} if device is None else {"device": device}
+    model.train(
+        data=str(data),
+        epochs=epochs,
+        imgsz=imgsz,
+        batch=8,
+        project=str(project),
+        name="run",
+        exist_ok=True,
+        **extra,
+    )
+    return best_weights(project, model.trainer), model.trainer.epoch + 1
+
+
+def best_weights(project, trainer=None):
     candidates = []
     if trainer is not None:
         candidates.append(Path(getattr(trainer, "best", "")))
@@ -226,8 +263,8 @@ def best_weights(session, trainer=None):
             candidates.append(Path(save_dir) / "weights" / "best.pt")
     candidates.extend(
         [
-            Path("runs/detect") / session / "train" / "run" / "weights" / "best.pt",
-            session / "train" / "run" / "weights" / "best.pt",
+            Path("runs/detect") / project / "run" / "weights" / "best.pt",
+            Path(project) / "run" / "weights" / "best.pt",
         ]
     )
     for path in candidates:
@@ -236,18 +273,17 @@ def best_weights(session, trainer=None):
     raise SystemExit("best.pt not found; training did not write weights")
 
 
-def export_onnx(best, imgsz):
+def export_onnx(best, imgsz, dest=Path("models/ball.onnx")):
     """Export at the frame's own shape: height rounded up to the stride, so a
     640x400 frame is padded by a few rows and never scaled."""
     from ultralytics import YOLO
 
     height = -(-FRAME_HEIGHT // 32) * 32 if imgsz == FRAME_WIDTH else imgsz
     exported = YOLO(str(best)).export(format="onnx", imgsz=[height, imgsz])
-    out = Path("models")
-    out.mkdir(exist_ok=True)
-    dest = out / "ball.onnx"
+    dest.parent.mkdir(parents=True, exist_ok=True)
     Path(exported).replace(dest)
     print(dest)
+    return dest
 
 
 def main():
@@ -258,6 +294,9 @@ def main():
         type=Path,
         help="data directories with labels.json; the dataset goes under the first one's train/",
     )
+    parser.add_argument(
+        "--dataset", type=Path, help="prebuilt YOLO dataset with data.yaml; skips the label build"
+    )
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--export-only", action="store_true")
     parser.add_argument("--epochs", type=int, default=40)
@@ -267,29 +306,22 @@ def main():
         self_test()
         print("ok")
         return
-    if not args.sessions:
-        raise SystemExit("session path required")
-    session = args.sessions[0]
+    if args.dataset:
+        project = args.dataset
+    elif args.sessions:
+        project = args.sessions[0] / "train"
+    else:
+        raise SystemExit("session path or --dataset required")
     if args.export_only:
-        export_onnx(best_weights(session), args.imgsz)
+        export_onnx(best_weights(project), args.imgsz)
         return
-    try:
-        from ultralytics import YOLO
-    except ImportError as exc:
-        raise SystemExit(f"cannot import ultralytics from {sys.executable}: {exc}") from exc
-    data, n_train, n_val = build_dataset(args.sessions)
-    print(f"dataset train={n_train} val={n_val}")
-    model = YOLO("yolo26n.pt")
-    model.train(
-        data=str(data),
-        epochs=args.epochs,
-        imgsz=args.imgsz,
-        batch=8,
-        project=str(session / "train"),
-        name="run",
-        exist_ok=True,
-    )
-    export_onnx(best_weights(session, model.trainer), args.imgsz)
+    if args.dataset:
+        data = use_dataset(args.dataset)
+    else:
+        data, n_train, n_val = build_dataset(args.sessions)
+        print(f"dataset train={n_train} val={n_val}")
+    best, _ = fit(data, args.epochs, args.imgsz, project)
+    export_onnx(best, args.imgsz)
 
 
 if __name__ == "__main__":
