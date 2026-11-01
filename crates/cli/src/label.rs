@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::jpeg::encode_gray_jpeg;
+use crate::label_tracks::{clip_tracks, Point};
 
 const MAX_GAP: usize = 12;
 
@@ -22,12 +23,41 @@ struct Mark {
     kind: String,
     cx: Option<f64>,
     cy: Option<f64>,
+    /// Detector class; absent means `ball`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cls: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LabelFile {
     box_px: u32,
     marks: Vec<Mark>,
+    /// Clips with no ball anywhere; training takes background frames from them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    empty_clips: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reviewed_tracks: Vec<Reviewed>,
+}
+
+/// A track the user accepted or rejected, keyed by clip, frame range, and
+/// first centre (two resting balls can share a range).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct Reviewed {
+    clip: String,
+    start: usize,
+    end: usize,
+    cx: f64,
+    cy: f64,
+    verdict: String,
+}
+
+impl Reviewed {
+    fn matches(&self, clip: &str, start: usize, end: usize, cx: f64, cy: f64) -> bool {
+        self.clip == clip
+            && self.start == start
+            && self.end == end
+            && (self.cx - cx).hypot(self.cy - cy) < 1.0
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,7 +92,10 @@ pub async fn label(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
         .route("/api/session", get(session_api))
         .route("/api/clips/{id}", get(clip_api))
         .route("/api/clips/{id}/frame/{index}", get(frame_api))
+        .route("/api/clips/{id}/tracks", get(tracks_api))
+        .route("/api/tracks/review", post(review_track))
         .route("/api/labels", get(labels_api).post(save_label))
+        .route("/api/empty_clips", post(save_empty_clip))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -76,6 +109,8 @@ fn read_labels(path: &std::path::Path) -> Result<LabelFile, String> {
         return Ok(LabelFile {
             box_px: 32,
             marks: Vec::new(),
+            empty_clips: Vec::new(),
+            reviewed_tracks: Vec::new(),
         });
     }
     let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -215,6 +250,7 @@ async fn labels_api(
     Ok(Json(serde_json::json!({
         "box": st.labels.box_px,
         "labels": labels,
+        "empty_clips": st.labels.empty_clips,
     })))
 }
 
@@ -225,6 +261,7 @@ struct SaveBody {
     kind: String,
     cx: Option<f64>,
     cy: Option<f64>,
+    cls: Option<String>,
     box_px: Option<u32>,
     #[serde(rename = "box")]
     box_alias: Option<u32>,
@@ -238,20 +275,141 @@ async fn save_label(
     if let Some(px) = body.box_px.or(body.box_alias) {
         st.labels.box_px = px.clamp(8, 80);
     }
-    st.labels
-        .marks
-        .retain(|m| !(m.clip == body.clip && m.index == body.index));
-    if body.kind != "clear" {
-        st.labels.marks.push(Mark {
-            clip: body.clip,
-            index: body.index,
-            kind: body.kind,
-            cx: body.cx,
-            cy: body.cy,
-        });
-    }
+    let mark = Mark {
+        clip: body.clip,
+        index: body.index,
+        kind: body.kind,
+        cx: body.cx,
+        cy: body.cy,
+        cls: body.cls,
+    };
+    put_mark(&mut st.labels.marks, mark);
     write_labels(&st.path, &st.labels)?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Replace the mark on the mark's frame; kind `clear` only removes.
+fn put_mark(marks: &mut Vec<Mark>, mark: Mark) {
+    marks.retain(|m| !(m.clip == mark.clip && m.index == mark.index));
+    if mark.kind != "clear" {
+        marks.push(mark);
+    }
+}
+
+async fn tracks_api(
+    Path(id): Path<String>,
+    State(state): State<Arc<Mutex<LabelState>>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut st = state.lock().map_err(|e| e.to_string())?;
+    let (width, height) = {
+        let clip = cached_clip(&mut st, &id)?;
+        (clip.meta.width, clip.meta.height)
+    };
+    let frames = match st.session.load_detections(&id) {
+        Ok(dets) => dets.frames,
+        Err(_) => Vec::new(),
+    };
+    let depth = tracker::units::metres(st.session.config.mount.distance);
+    let mut tracks = clip_tracks(&frames, width, height, depth);
+    for t in &mut tracks {
+        let p = &t.points[0];
+        t.verdict = st
+            .labels
+            .reviewed_tracks
+            .iter()
+            .find(|r| r.matches(&id, t.start, t.end, p.cx, p.cy))
+            .map(|r| r.verdict.clone());
+    }
+    Ok(Json(serde_json::json!({ "tracks": tracks })))
+}
+
+#[derive(Deserialize)]
+struct ReviewBody {
+    clip: String,
+    /// `ball` writes a mark per point; `reject` writes none.
+    verdict: String,
+    points: Vec<Point>,
+}
+
+async fn review_track(
+    State(state): State<Arc<Mutex<LabelState>>>,
+    Json(body): Json<ReviewBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut st = state.lock().map_err(|e| e.to_string())?;
+    apply_review(&mut st.labels, body)?;
+    write_labels(&st.path, &st.labels)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Record a verdict on a track. Rejecting a track accepted earlier removes the
+/// ball marks it wrote, left where they still sit on its points.
+fn apply_review(labels: &mut LabelFile, body: ReviewBody) -> Result<(), String> {
+    if body.verdict != "ball" && body.verdict != "reject" {
+        return Err(format!("unknown verdict {}", body.verdict));
+    }
+    let (Some(first), Some(last)) = (body.points.first(), body.points.last()) else {
+        return Err("track has no points".into());
+    };
+    let key = Reviewed {
+        clip: body.clip.clone(),
+        start: first.index,
+        end: last.index,
+        cx: first.cx,
+        cy: first.cy,
+        verdict: body.verdict.clone(),
+    };
+    labels
+        .reviewed_tracks
+        .retain(|r| !r.matches(&key.clip, key.start, key.end, key.cx, key.cy));
+    labels.reviewed_tracks.push(key);
+    for p in &body.points {
+        if body.verdict == "ball" {
+            put_mark(
+                &mut labels.marks,
+                Mark {
+                    clip: body.clip.clone(),
+                    index: p.index,
+                    kind: "ball".into(),
+                    cx: Some(p.cx),
+                    cy: Some(p.cy),
+                    cls: None,
+                },
+            );
+        } else {
+            labels.marks.retain(|m| {
+                let on_point = m.clip == body.clip
+                    && m.index == p.index
+                    && m.kind == "ball"
+                    && matches!((m.cx, m.cy), (Some(x), Some(y)) if (x - p.cx).hypot(y - p.cy) < 0.5);
+                !on_point
+            });
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct EmptyClipBody {
+    clip: String,
+    empty: bool,
+}
+
+async fn save_empty_clip(
+    State(state): State<Arc<Mutex<LabelState>>>,
+    Json(body): Json<EmptyClipBody>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut st = state.lock().map_err(|e| e.to_string())?;
+    set_empty_clip(&mut st.labels.empty_clips, body.clip, body.empty);
+    write_labels(&st.path, &st.labels)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+fn set_empty_clip(clips: &mut Vec<String>, clip: String, empty: bool) {
+    clips.retain(|c| *c != clip);
+    if empty {
+        clips.push(clip);
+        clips.sort_unstable();
+    }
 }
 
 fn cached_clip<'a>(st: &'a mut LabelState, id: &str) -> Result<&'a tracker::Clip, String> {
@@ -277,6 +435,7 @@ mod tests {
             kind: "ball".into(),
             cx: Some(x),
             cy: Some(10.0),
+            cls: None,
         }
     }
 
@@ -298,9 +457,60 @@ mod tests {
                 kind: "empty".into(),
                 cx: None,
                 cy: None,
+                cls: None,
             },
             ball(4, 40.0),
         ];
         assert!(interpolate(&marks).iter().all(|d| !d.filled));
+    }
+
+    #[test]
+    fn empty_clips_toggle_and_stay_sorted() {
+        let mut clips = Vec::new();
+        set_empty_clip(&mut clips, "0044".into(), true);
+        set_empty_clip(&mut clips, "0002".into(), true);
+        set_empty_clip(&mut clips, "0044".into(), true);
+        assert_eq!(clips, vec!["0002", "0044"]);
+        set_empty_clip(&mut clips, "0002".into(), false);
+        assert_eq!(clips, vec!["0044"]);
+    }
+
+    #[test]
+    fn accepting_then_rejecting_a_track_writes_then_removes_its_marks() {
+        let mut labels = LabelFile {
+            box_px: 32,
+            marks: vec![ball(9, 5.0)],
+            empty_clips: Vec::new(),
+            reviewed_tracks: Vec::new(),
+        };
+        let review = |verdict: &str| ReviewBody {
+            clip: "0001".into(),
+            verdict: verdict.into(),
+            points: (3..6)
+                .map(|index| Point {
+                    index,
+                    cx: index as f64,
+                    cy: 10.0,
+                })
+                .collect(),
+        };
+        apply_review(&mut labels, review("ball")).unwrap();
+        assert_eq!(labels.marks.len(), 4);
+        assert_eq!(labels.marks[3], ball(5, 5.0));
+        apply_review(&mut labels, review("reject")).unwrap();
+        assert_eq!(labels.marks, vec![ball(9, 5.0)]);
+        assert_eq!(labels.reviewed_tracks.len(), 1);
+        assert_eq!(labels.reviewed_tracks[0].verdict, "reject");
+    }
+
+    #[test]
+    fn old_label_files_still_load() {
+        let file: LabelFile =
+            serde_json::from_str(r#"{"box_px":32,"marks":[{"clip":"0001","index":0,"kind":"empty","cx":null,"cy":null}]}"#)
+                .unwrap();
+        assert!(file.empty_clips.is_empty());
+        let text = serde_json::to_string(&file).unwrap();
+        assert!(!text.contains("cls") && !text.contains("empty_clips"));
+        assert!(!text.contains("reviewed_tracks"));
     }
 }
