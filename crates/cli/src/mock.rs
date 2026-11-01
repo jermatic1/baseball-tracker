@@ -29,7 +29,7 @@ pub async fn mock(path: PathBuf, period: f64, model: PathBuf) -> Result<(), Stri
         device::SyntheticCamera::new(c.width.min(640), c.height.min(400), c.fps.max(1.0) as f32);
     let calib = crate::capture::stereo_calib(&data, None);
     let generator = tokio::spawn(generate(Arc::clone(&hub), Duration::from_secs_f64(period)));
-    println!("mock tracker: an event every {period} s while a client is connected");
+    println!("mock tracker: an event every {period} s while a client is connected or a session is active");
     let result = server::run(data, cam, c.exposure, c.gain, calib, None, hub, model).await;
     generator.abort();
     result

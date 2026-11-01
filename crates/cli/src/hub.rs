@@ -14,16 +14,23 @@ use tracker::{
 
 use crate::protocol::{ModelStatus, ServerMsg, SessionInfo, UserInfo};
 
-/// Capture runs only for connected clients, and never during calibration.
+/// The camera and detector are wanted while a client is connected or a
+/// session is active; detection runs while they are wanted, except during
+/// calibration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gate {
     pub clients: usize,
+    pub session: bool,
     pub calibrating: bool,
 }
 
 impl Gate {
+    pub fn wanted(&self) -> bool {
+        self.clients > 0 || self.session
+    }
+
     pub fn capturing(&self) -> bool {
-        self.clients > 0 && !self.calibrating
+        self.wanted() && !self.calibrating
     }
 }
 
@@ -55,6 +62,7 @@ pub struct Hub {
     clients: Mutex<Vec<Client>>,
     next_id: AtomicU64,
     pub preview_subs: AtomicUsize,
+    wanted: AtomicBool,
     capturing: AtomicBool,
     calibrating: AtomicBool,
     /// The live config; an applied calibration lands here and in the file.
@@ -93,11 +101,12 @@ impl Hub {
             }
             None => None,
         };
-        Ok(Arc::new(Self {
+        let hub = Arc::new(Self {
             tx,
             clients: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
             preview_subs: AtomicUsize::new(0),
+            wanted: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
             calibrating: AtomicBool::new(false),
             config: RwLock::new(root.config.clone()),
@@ -109,7 +118,9 @@ impl Hub {
             store: Mutex::new(store),
             active: RwLock::new(active),
             games: Mutex::new(Vec::new()),
-        }))
+        });
+        hub.recompute();
+        Ok(hub)
     }
 
     /// Record the camera's exposure and gain for the next session started.
@@ -218,6 +229,12 @@ impl Hub {
         self.calibrating.load(Ordering::Relaxed)
     }
 
+    /// Whether the camera and the detector should be running.
+    #[cfg_attr(not(feature = "detect"), allow(dead_code))]
+    pub fn wanted(&self) -> bool {
+        self.wanted.load(Ordering::Relaxed)
+    }
+
     pub fn capturing(&self) -> bool {
         self.capturing.load(Ordering::Relaxed)
     }
@@ -225,8 +242,10 @@ impl Hub {
     fn recompute(&self) {
         let gate = Gate {
             clients: self.clients.lock().map(|c| c.len()).unwrap_or(0),
+            session: self.active.read().is_ok_and(|a| a.is_some()),
             calibrating: self.calibrating.load(Ordering::Relaxed),
         };
+        self.wanted.store(gate.wanted(), Ordering::Relaxed);
         self.capturing.store(gate.capturing(), Ordering::Relaxed);
     }
 
@@ -357,6 +376,7 @@ impl Hub {
                 dir,
             });
         }
+        self.recompute();
         self.send(&self.session_msg());
         self.send(&Self::stats_msg(&store, session.id)?);
         if let Ok(mut modules) = self.games.lock() {
@@ -384,6 +404,7 @@ impl Hub {
             return Err("no such active session".into());
         };
         store.end_session(id).map_err(|e| e.to_string())?;
+        self.recompute();
         self.send(&self.session_msg());
         self.send(&self.ended_summary(&store, &old.session)?);
         Ok(())
@@ -661,15 +682,19 @@ mod tests {
 
     #[test]
     fn gate_rule() {
-        let g = |clients, calibrating| Gate {
+        let g = |clients, session, calibrating| Gate {
             clients,
+            session,
             calibrating,
         };
-        assert!(!g(0, false).capturing());
-        assert!(g(1, false).capturing());
-        assert!(g(3, false).capturing());
-        assert!(!g(1, true).capturing());
-        assert!(!g(0, true).capturing());
+        assert!(!g(0, false, false).wanted());
+        assert!(!g(0, false, false).capturing());
+        assert!(g(1, false, false).capturing());
+        assert!(g(3, false, false).capturing());
+        assert!(g(0, true, false).capturing());
+        assert!(!g(1, false, true).capturing());
+        assert!(!g(0, true, true).capturing());
+        assert!(g(1, false, true).wanted());
     }
 
     #[test]
@@ -700,8 +725,10 @@ mod tests {
         assert!(matches!(next(&mut rx), ServerMsg::Users { users } if users[0].name == "Sam"));
         assert_eq!(hub.target().1, None);
 
+        assert!(!hub.wanted());
         hub.start_session("1", Activity::Hitting, Mode::Game)
             .unwrap();
+        assert!(hub.wanted() && hub.capturing());
         let ServerMsg::Session { session: Some(s) } = next(&mut rx) else {
             panic!("session");
         };
@@ -735,6 +762,7 @@ mod tests {
 
         assert!(hub.end_session("1").is_err());
         hub.end_session("2").unwrap();
+        assert!(!hub.wanted() && !hub.capturing());
         assert!(matches!(
             next(&mut rx),
             ServerMsg::Session { session: None }

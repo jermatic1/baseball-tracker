@@ -18,6 +18,8 @@ mod protocol;
 mod replay;
 mod review;
 mod sessions;
+#[cfg(feature = "detect")]
+mod standby;
 mod train;
 #[cfg(feature = "detect")]
 mod watch;

@@ -1,0 +1,7 @@
+*
+!dist/release
+!tools
+tools/**/__pycache__
+!docker
+!pyproject.toml
+!uv.lock

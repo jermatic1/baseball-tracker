@@ -1,22 +1,26 @@
 //! Live tracking: the capture server plus a detector that sees every frame,
 //! a watcher that cuts the windows where a ball moved, and a coordinator
 //! that measures each window, broadcasts its events, records them under the
-//! active session, and saves it as a clip. Detection runs only while a
-//! client is connected. A promoted model loads on its own thread while the
-//! old one keeps detecting, then is handed to the detector thread, which
-//! swaps it in between frames.
+//! active session, and saves it as a clip. The web pages run from startup,
+//! but the camera and the detector come up only while a client is connected
+//! or a session is active, and are released a while after neither is true
+//! (see `standby`). Detection pauses during calibration. A promoted model
+//! loads on its own thread while the old one keeps detecting, then is
+//! handed to the detector thread, which swaps it in between frames; in
+//! standby it is built and dropped, so the next start finds its engine
+//! cached.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracker::{
-    process_clip, ClipMeta, ClipWriter, DataDir, Detections, Episode, Intrinsics, StereoCalib,
-    StoredFrame, WatchConfig, WatchState, Watcher,
+    process_clip, ClipMeta, ClipWriter, DataDir, Detections, Episode, Intrinsics, Rectifier,
+    StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
 };
 
 use crate::capture::server::{self, LiveTap};
@@ -24,10 +28,13 @@ use crate::convert::print_hit;
 use crate::detector::{Detector, FrameView};
 use crate::hub::Hub;
 use crate::protocol::LiveStatus;
+use crate::standby::{Engine, OnDemand, Open};
 
 /// Frames queued for the detector before the newest are dropped: about
 /// three seconds.
 const QUEUE: usize = 300;
+/// How often the detector thread checks for engine changes with no frames.
+const ENGINE_POLL: Duration = Duration::from_millis(200);
 
 /// A finished window: where its clip was written and the session it
 /// belongs to, fixed when the window opened.
@@ -44,8 +51,34 @@ struct Shared {
     sent: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     hub: Arc<Hub>,
-    /// Loaded models waiting to replace the running one.
-    swap: Receiver<Detector>,
+    engine: Receiver<Engine>,
+}
+
+/// The detector while the camera is up, with the stereo geometry it reads.
+struct Running {
+    detector: Detector,
+    calib: StereoCalib,
+    rectifier: Option<Rectifier>,
+}
+
+/// Loads a model with its engine built, one load at a time so a start and a
+/// promoted model never build engines side by side.
+struct Models {
+    conf: f32,
+    width: u32,
+    height: u32,
+    lock: Mutex<()>,
+}
+
+impl Models {
+    fn load(&self, model: &Path) -> Result<(Detector, tracker::ModelInfo), String> {
+        let _one = self.lock.lock().map_err(|e| e.to_string())?;
+        let live = tracker::model_record::live_model(model);
+        let conf = tracker::model_record::live_conf(&live, self.conf);
+        let detector = Detector::load_warm(&live, conf, self.width, self.height)?;
+        let info = model_info(&live, detector.model_hash());
+        Ok((detector, info))
+    }
 }
 
 pub async fn watch(
@@ -60,30 +93,53 @@ pub async fn watch(
     hub.set_model(model_info(Path::new(&model), &detector));
     #[cfg(feature = "challenges")]
     hub.register(Box::new(challenges::Challenges::load(&session.dir)?));
+    let (open, calib) = camera(&session, from, gap)?;
     let status = Arc::new(Mutex::new(LiveStatus {
-        provider: detector.provider().to_string(),
-        state: "idle".into(),
+        state: "standby".into(),
         ..LiveStatus::default()
     }));
     let (frame_tx, frame_rx) = mpsc::sync_channel(QUEUE);
     let (done_tx, done_rx) = unbounded_channel();
-    let (swap_tx, swap_rx) = mpsc::channel();
+    let (engine_tx, engine_rx) = mpsc::channel();
     let c = session.config.capture.clone();
+    let models = Arc::new(Models {
+        conf: session.config.detector.conf,
+        width: c.width,
+        height: c.height,
+        lock: Mutex::new(()),
+    });
     let tap = LiveTap {
         frames: frame_tx,
         sent: Arc::new(AtomicU64::new(0)),
         drops: Arc::new(AtomicU64::new(0)),
         status: Arc::clone(&status),
         stop: Arc::new(AtomicBool::new(false)),
-        reload: loader(swap_tx, Arc::clone(&hub), c.width, c.height),
+        reload: loader(engine_tx.clone(), Arc::clone(&models), Arc::clone(&hub)),
     };
     let shared = Shared {
         status: Arc::clone(&status),
         sent: Arc::clone(&tap.sent),
         stop: Arc::clone(&tap.stop),
         hub: Arc::clone(&hub),
-        swap: swap_rx,
+        engine: engine_rx,
     };
+    let load = {
+        let hub = Arc::clone(&hub);
+        let model = PathBuf::from(&model);
+        Box::new(move || {
+            let (detector, info) = models.load(&model)?;
+            hub.set_model(info);
+            Ok(detector)
+        })
+    };
+    let cam = OnDemand::new(
+        open,
+        load,
+        engine_tx,
+        Arc::clone(&hub),
+        Arc::clone(&status),
+        (c.width, c.height),
+    );
     let watch_status = Arc::clone(&status);
     let coordinator = tokio::spawn(coordinate(
         done_rx,
@@ -91,56 +147,18 @@ pub async fn watch(
         Arc::clone(&status),
         Intrinsics::from_fov(c.width, c.height, 80.0, 55.0),
     ));
-    let worker = match from {
-        Some(source) => {
-            let source = DataDir::open(&source).map_err(|e| e.to_string())?;
-            let calibration = source.dir.join("calibration.json");
-            if calibration.exists() && !session.dir.join("calibration.json").exists() {
-                std::fs::copy(&calibration, session.dir.join("calibration.json"))
-                    .map_err(|e| e.to_string())?;
-            }
-            let device_json = std::fs::read_to_string(session.dir.join("calibration.json")).ok();
-            let calib = crate::capture::stereo_calib(&session, device_json.as_deref());
-            let cam = crate::replay::ClipCamera::open(&source, Duration::from_secs_f64(gap))?;
-            let worker = spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
-            server::run(
-                session,
-                cam,
-                c.exposure,
-                c.gain,
-                calib,
-                Some(tap),
-                hub,
-                model.into(),
-            )
-            .await?;
-            worker
-        }
-        None => {
-            #[cfg(not(feature = "oak"))]
-            {
-                let _ = (frame_rx, done_tx, shared, hub);
-                return Err("rebuild with --features oak, or pass --from <session>".into());
-            }
-            #[cfg(feature = "oak")]
-            {
-                let (cam, calib) = crate::capture::open_oak(&session)?;
-                let worker = spawn_detector(frame_rx, detector, &session, calib, shared, done_tx);
-                server::run(
-                    session,
-                    cam,
-                    c.exposure,
-                    c.gain,
-                    calib,
-                    Some(tap),
-                    hub,
-                    model.into(),
-                )
-                .await?;
-                worker
-            }
-        }
-    };
+    let worker = spawn_detector(frame_rx, &session, shared, done_tx);
+    server::run(
+        session,
+        cam,
+        c.exposure,
+        c.gain,
+        calib,
+        Some(tap),
+        hub,
+        model.into(),
+    )
+    .await?;
     let pending = || {
         watch_status
             .lock()
@@ -160,29 +178,74 @@ pub async fn watch(
     result
 }
 
-fn model_info(model: &Path, detector: &Detector) -> tracker::ModelInfo {
+/// How to open the camera, and the stereo geometry to assume until it is
+/// open: replayed clips from `from`, else the OAK.
+fn camera(
+    session: &DataDir,
+    from: Option<PathBuf>,
+    gap: f64,
+) -> Result<(Open, StereoCalib), String> {
+    let saved = |session: &DataDir| {
+        let json = std::fs::read_to_string(session.dir.join("calibration.json")).ok();
+        crate::capture::stereo_calib(session, json.as_deref())
+    };
+    match from {
+        Some(source) => {
+            let source = DataDir::open(&source).map_err(|e| e.to_string())?;
+            let calibration = source.dir.join("calibration.json");
+            if calibration.exists() && !session.dir.join("calibration.json").exists() {
+                std::fs::copy(&calibration, session.dir.join("calibration.json"))
+                    .map_err(|e| e.to_string())?;
+            }
+            let calib = saved(session);
+            let gap = Duration::from_secs_f64(gap);
+            let open: Open = Box::new(move || {
+                let cam = crate::replay::ClipCamera::open(&source, gap)?;
+                Ok((Box::new(cam) as Box<dyn device::Camera + Send>, calib))
+            });
+            Ok((open, calib))
+        }
+        None => {
+            #[cfg(not(feature = "oak"))]
+            {
+                let _ = saved;
+                Err("rebuild with --features oak, or pass --from <session>".into())
+            }
+            #[cfg(feature = "oak")]
+            {
+                let session = session.clone();
+                let calib = saved(&session);
+                let open: Open = Box::new(move || {
+                    let (cam, calib) = crate::capture::open_oak(&session)?;
+                    Ok((Box::new(cam) as Box<dyn device::Camera + Send>, calib))
+                });
+                Ok((open, calib))
+            }
+        }
+    }
+}
+
+fn model_info(model: &Path, sha1: &str) -> tracker::ModelInfo {
     tracker::ModelInfo {
         file: model.file_name().map_or_else(
             || model.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         ),
-        sha1: detector.model_hash().to_string(),
+        sha1: sha1.to_string(),
     }
 }
 
-/// Load a model and run one frame through it, so its engine is built before
-/// it replaces the running detector, then send it to the detector thread.
+/// Load a promoted model with its engine built, then send it to the
+/// detector thread.
 fn loader(
-    swap: mpsc::Sender<Detector>,
+    engine: mpsc::Sender<Engine>,
+    models: Arc<Models>,
     hub: Arc<Hub>,
-    width: u32,
-    height: u32,
 ) -> crate::train::Loader {
     Arc::new(move |model: &Path| {
-        let path = model.to_str().ok_or("the model path is not UTF-8")?;
-        let detector = Detector::load_warm(path, width, height)?;
-        let info = model_info(model, &detector);
-        swap.send(detector)
+        let (detector, info) = models.load(model)?;
+        engine
+            .send(Engine::Swap(detector))
             .map_err(|_| "the detector has stopped".to_string())?;
         hub.set_model(info);
         Ok(())
@@ -191,28 +254,24 @@ fn loader(
 
 fn spawn_detector(
     rx: Receiver<Arc<StoredFrame>>,
-    detector: Detector,
     session: &DataDir,
-    calib: StereoCalib,
     shared: Shared,
     done: UnboundedSender<Finished>,
 ) -> std::thread::JoinHandle<()> {
     let session = session.clone();
     std::thread::spawn(move || {
-        if let Err(e) = detect_loop(rx, detector, session, calib, shared, done) {
+        if let Err(e) = detect_loop(rx, session, shared, done) {
             eprintln!("detector stopped: {e}");
         }
     })
 }
 
 /// Every frame: detect, feed the watcher, keep the pre-roll ring, and write
-/// the open episode's frames to its clip as they arrive. While no client is
-/// connected, frames are counted and dropped.
+/// the open episode's frames to its clip as they arrive. Frames are counted
+/// and dropped while capture is gated off or there is no detector.
 fn detect_loop(
     rx: Receiver<Arc<StoredFrame>>,
-    mut detector: Detector,
     session: DataDir,
-    calib: StereoCalib,
     shared: Shared,
     done: UnboundedSender<Finished>,
 ) -> Result<(), String> {
@@ -221,11 +280,11 @@ fn detect_loop(
         sent,
         stop,
         hub,
-        swap,
+        engine: control,
     } = shared;
     let cfg: WatchConfig = session.config.watch.clone();
     let c = session.config.capture.clone();
-    let rectifier = session.rectifier(c.width, c.height);
+    let mut engine: Option<Running> = None;
     let mut watcher = Watcher::new(cfg.clone());
     let mut ring: VecDeque<(usize, Arc<StoredFrame>)> = VecDeque::new();
     let preroll_ns = (cfg.preroll * 1e9) as u64;
@@ -235,39 +294,83 @@ fn detect_loop(
     let mut taken = 0u64;
     let mut meter = (Instant::now(), 0u32);
     let mut last_status = Instant::now();
-    let mut first = Some(Instant::now());
+    let set_status = |change: &dyn Fn(&mut LiveStatus)| {
+        if let Ok(mut s) = status.lock() {
+            change(&mut s);
+        }
+    };
     let mut report =
         |watcher: &Watcher, boxes: Vec<[f64; 4]>, taken: u64, meter: &mut (Instant, u32)| {
             if last_status.elapsed() < Duration::from_millis(200) {
                 return;
             }
             let dt = meter.0.elapsed().as_secs_f64();
-            if let Ok(mut s) = status.lock() {
+            set_status(&|s| {
                 s.rate = meter.1 as f64 / dt.max(1e-3);
                 s.lag = sent.load(Ordering::Relaxed).saturating_sub(taken);
                 s.state = match watcher.state() {
                     WatchState::Idle => "idle".into(),
                     WatchState::Episode => "episode".into(),
                 };
-                s.boxes = boxes;
-            }
+                s.boxes = boxes.clone();
+            });
             if dt >= 1.0 {
                 *meter = (Instant::now(), 0);
             }
             last_status = Instant::now();
         };
-    while let Ok(frame) = rx.recv() {
-        taken += 1;
-        if let Ok(next) = swap.try_recv() {
-            detector = next;
-            println!("detector: swapped in the promoted model");
+    loop {
+        let frame = match rx.recv_timeout(ENGINE_POLL) {
+            Ok(frame) => Some(frame),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        while let Ok(change) = control.try_recv() {
+            match change {
+                Engine::Start { detector, calib } => {
+                    engine = Some(Running {
+                        detector,
+                        calib,
+                        rectifier: session.rectifier(c.width, c.height),
+                    });
+                    watcher = Watcher::new(cfg.clone());
+                    meter = (Instant::now(), 0);
+                    set_status(&|s| s.state = "idle".into());
+                }
+                Engine::Swap(next) => match engine.as_mut() {
+                    Some(running) => {
+                        running.detector = next;
+                        println!("detector: swapped in the promoted model");
+                    }
+                    None => println!("detector: the promoted model is ready for the next start"),
+                },
+                Engine::Release => {
+                    if let Some(episode) = gate_closed(&mut watcher) {
+                        let target = target.take().unwrap_or_else(|| hub.target());
+                        finish_episode(target, writer.take(), episode, &c, &done);
+                    }
+                    ring.clear();
+                    engine = None;
+                    set_status(&|s| {
+                        *s = LiveStatus {
+                            state: "standby".into(),
+                            provider: s.provider.clone(),
+                            clips: s.clips,
+                            last_event: s.last_event.clone(),
+                            ..LiveStatus::default()
+                        }
+                    });
+                }
+            }
         }
+        let Some(frame) = frame else { continue };
+        taken += 1;
         if stop.load(Ordering::Relaxed) && watcher.state() == WatchState::Idle {
             let skipped = sent.load(Ordering::Relaxed).saturating_sub(taken) + 1;
             println!("stopping with no episode open; skipping {skipped} queued frames");
             break;
         }
-        if !hub.capturing() {
+        let Some(running) = engine.as_mut().filter(|_| hub.capturing()) else {
             if let Some(episode) = gate_closed(&mut watcher) {
                 let target = target.take().unwrap_or_else(|| hub.target());
                 finish_episode(target, writer.take(), episode, &c, &done);
@@ -275,24 +378,19 @@ fn detect_loop(
             ring.clear();
             index += 1;
             meter.1 += 1;
-            report(&watcher, Vec::new(), taken, &mut meter);
+            if engine.is_some() {
+                report(&watcher, Vec::new(), taken, &mut meter);
+            }
             continue;
-        }
-        if first.is_some() {
-            println!(
-                "detector: first inference, building the {} engine if it is not cached (minutes on a first start)",
-                detector.provider()
-            );
-            first = Some(Instant::now());
-        }
-        let balls = match detector.detect(&FrameView {
+        };
+        let balls = match running.detector.detect(&FrameView {
             width: frame.width,
             height: frame.height,
             left: &frame.left,
             right: (!frame.right.is_empty()).then_some(frame.right.as_slice()),
             depth: (!frame.depth_mm.is_empty()).then_some(frame.depth_mm.as_slice()),
-            rectifier: rectifier.as_ref(),
-            calib,
+            rectifier: running.rectifier.as_ref(),
+            calib: running.calib,
         }) {
             Ok(b) => b,
             Err(e) => {
@@ -300,9 +398,7 @@ fn detect_loop(
                 Vec::new()
             }
         };
-        if let Some(started) = first.take() {
-            println!("detector ready in {:.1} s", started.elapsed().as_secs_f64());
-        }
+        let calib = running.calib;
         let boxes: Vec<[f64; 4]> = balls.iter().map(|b| [b.x, b.y, b.w, b.h]).collect();
         let was_open = watcher.state() == WatchState::Episode;
         let episode = watcher.observe(index, frame.t_ns, balls);

@@ -1,5 +1,4 @@
-# task train installs these with `uv pip install --torch-backend=auto`.
-# Do not uv lock. The default Linux torch wheel is CUDA.
+# `task train-env TARGET=cuda|rocm` installs these with `uv sync --extra TARGET`.
 
 [project]
 name = "tracker-train"
@@ -7,15 +6,52 @@ version = "0.1.0"
 description = "Fine-tune the ball detector and export ONNX"
 requires-python = ">=3.11"
 dependencies = [
+    "opencv-python-headless",
     "pillow>=10",
     "ultralytics>=8.4",
 ]
 
+[project.optional-dependencies]
+cuda = ["torch==2.12.1", "torchvision==0.27.1"]
+# ROCm wheels are x86_64 only. triton-rocm is only on the PyTorch
+# index; uv applies an index to direct dependencies, so it is listed here.
+rocm = [
+    "torch==2.12.1+rocm7.2; platform_machine == 'x86_64'",
+    "torchvision==0.27.1+rocm7.2; platform_machine == 'x86_64'",
+    "triton-rocm; platform_machine == 'x86_64'",
+]
+
 [tool.uv]
 package = false
+environments = ["sys_platform == 'linux'"]
+conflicts = [[{ extra = "cuda" }, { extra = "rocm" }]]
+# Ultralytics requires opencv-python; the headless build replaces it.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cuda", extra = "cuda" },
+    { index = "pytorch-rocm", extra = "rocm" },
+]
+torchvision = [
+    { index = "pytorch-cuda", extra = "cuda" },
+    { index = "pytorch-rocm", extra = "rocm" },
+]
+triton-rocm = { index = "pytorch-rocm", extra = "rocm" }
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
 # `task onnxruntime` installs this and copies the libraries next to the binary.
 [dependency-groups]
 onnxruntime = [
     "onnxruntime-gpu==1.31.0; platform_machine == 'x86_64'",
-    "onnxruntime-gpu @ https://github.com/ultralytics/assets/releases/download/v0.0.0/onnxruntime_gpu-1.24.0-cp312-cp312-linux_aarch64.whl ; platform_machine == 'aarch64'",
+    "onnxruntime-gpu @ https://github.com/ultralytics/assets/releases/download/v0.0.0/onnxruntime_gpu-1.24.0-cp312-cp312-linux_aarch64.whl ; platform_machine == 'aarch64' and python_version == '3.12'",
 ]

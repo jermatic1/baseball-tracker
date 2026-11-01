@@ -1,0 +1,24 @@
+# The tracker on a Jetson. Save as compose.yaml and run: docker compose up -d
+services:
+  tracker:
+    image: ghcr.io/jermatic1/baseball-tracker/tracker:jetson
+    runtime: nvidia
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+      - ./models:/opt/tracker/models
+      - /dev/bus/usb:/dev/bus/usb
+    device_cgroup_rules:
+      - "c 189:* rmw"
+
+  # To train on the board too: uncomment, mkdir runs, and set the tracker's
+  # [training] server to http://localhost:7882.
+  # train-server:
+  #   image: ghcr.io/jermatic1/baseball-tracker/train:cuda
+  #   runtime: nvidia
+  #   network_mode: host
+  #   restart: unless-stopped
+  #   shm_size: 2g
+  #   volumes:
+  #     - ./runs:/work/runs

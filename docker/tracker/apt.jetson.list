@@ -1,0 +1,1 @@
+deb [signed-by=/etc/apt/keyrings/jetson-ota-public.asc] https://repo.download.nvidia.com/jetson/common r39.2 main

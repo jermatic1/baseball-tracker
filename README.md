@@ -6,27 +6,31 @@ Tracker is a real-time hitting data system. It measures exit velocity, launch an
 
 - Luxonis OAK-D (RVC2) on a USB 3 port.
 - Linux on x86_64, or a Jetson Orin Nano with JetPack 7.
-- A home plate in view of the camera. A batter's box mat with an integrated plate works.
+- A home plate in view of the camera.
 - To train the ball detector: a machine with a CUDA or ROCm GPU.
 
 ## Install
 
 ### Jetson
 
-Flash the Jetson Orin Nano with the JetPack 7 ISO and finish the first-boot wizard. The image ships without ssh host keys, so run this once on the board before ssh works:
+Flash JetPack 7, finish the first-boot wizard, and enable ssh once on the board:
 
 ```bash
 sudo ssh-keygen -A
 sudo systemctl restart ssh
 ```
 
-Then install over ssh:
+Then, over ssh:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jermatic1/baseball-tracker/main/install.sh | sh
 ```
 
-This installs the JetPack GPU libraries, the camera udev rule, and the latest release into `~/tracker`, and turns off WiFi power saving, which otherwise stalls ssh and the pages. `TRACKER_INSTALL` chooses another directory.
+This installs the GPU libraries, the camera udev rule, and the latest release into `~/tracker`.
+
+### Docker
+
+See [docker/tracker](docker/tracker/README.md) for the tracker and [docker/train](docker/train/README.md) for the training server.
 
 ### From source
 
@@ -39,9 +43,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 task release
 ```
 
-The first build compiles the camera library and takes a while. The result is `dist/release/tracker`, one executable for everything. Detection runs on the GPU through ONNX Runtime, or on the CPU without one.
-
-Install the camera udev rule once and replug the camera, or the device is root-only. Do not run the tracker as root.
+The result is `dist/release/tracker`, one executable for everything. Install the camera udev rule once and replug the camera; do not run the tracker as root:
 
 ```bash
 echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules
@@ -50,17 +52,15 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ## Usage
 
-Everything lives in a data directory, `data` by default: the config, the calibration, the database of users, sessions, and events, and the recorded clips.
+Everything lives in a data directory, `data` by default.
 
-1. **Run.** `task run`, or `./tracker watch data` with the prebuilt executable, serves the pages on port 7880. The tracker page is at `/` and the camera setup page at `/setup`.
-2. **Calibrate, once per camera placement.** With the plate clear, click Calibrate on the setup page, or click the plate's five corners on the preview. The page warns in red when the fit looks wrong.
-3. **Train the detector, once.** On a session's label page, accept or reject each clip's ball tracks, pressing `e` on a clip with no ball in it. Mark the session to include on the sessions page, press Train on `/train`, and press Promote when the new model scores better. The new model loads without a restart.
-4. **Hit.** Add a user on the tracker page and start a session. Every moving ball is measured, sent to the connected simulators, and saved as a clip. A ball resting on the tee is ignored.
-5. **Review.** The sessions page at `/sessions` lists every session with a playback page that plays each clip with detections drawn and lists its events.
+1. **Run.** `task run` serves the pages on port 7880.
+2. **Calibrate** once per camera placement: with the plate clear, press Calibrate on the setup page.
+3. **Hit.** Add a user, start a session on the tracker page, and hit. Every moving ball is measured, sent to connected simulators, and saved as a clip.
+4. **Review.** The sessions page lists every session with playback of its clips.
+5. **Train** when the detector misses balls or fires on something else: label a session, mark it to include, and press Train. Promote the result when it scores better.
 
-Training runs on a training server: `task train-server` on a machine with a GPU, with its address in the config under `[training]`.
-
-`task mock` serves the same pages with no camera and made-up hits, and `task replay FROM=data/sessions/3` plays a session back through the live path.
+Training runs on a training server, `task train-server` on a machine with a GPU, with its address under `[training]` in the config.
 
 ## Configuration
 
@@ -68,4 +68,4 @@ Training runs on a training server: `task train-server` on a machine with a GPU,
 
 ## Simulators
 
-Simulators find the tracker on the local network and receive every hit over a WebSocket. The protocol and the game modules are described in [docs/protocol.md](docs/protocol.md).
+Simulators find the tracker on the local network and receive every hit over a WebSocket. See [docs/protocol.md](docs/protocol.md).

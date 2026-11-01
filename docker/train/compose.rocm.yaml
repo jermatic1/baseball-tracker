@@ -1,0 +1,13 @@
+# Training server on an AMD ROCm GPU. Save as compose.yaml and run: docker compose up -d
+services:
+  train-server:
+    image: ghcr.io/jermatic1/baseball-tracker/train:rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    ports:
+      - "7882:7882"
+    restart: unless-stopped
+    shm_size: 2g
+    volumes:
+      - ./runs:/work/runs

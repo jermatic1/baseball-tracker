@@ -43,7 +43,7 @@ tasks:
       - ls target/release/libonnxruntime.so*
 
   run:
-    desc: Live tracking; serves the socket, measures every hit and throw while a client is connected
+    desc: Live tracking; serves the socket, measures every hit and throw while a client is connected or a session is active
     deps: [onnxruntime]
     cmds:
       - cargo run -p cli --release --features oak --quiet -- watch {{.DATA}}
@@ -93,25 +93,22 @@ tasks:
 
   train-env:
     internal: true
-    env:
-      UV_NO_PROJECT: "1"
     cmds:
-      - uv venv --allow-existing --python 3.12 .venv
-      - uv pip install --python .venv/bin/python ultralytics pillow --torch-backend=auto
-      - uv pip uninstall --python .venv/bin/python opencv-python
-      - uv pip install --python .venv/bin/python opencv-python-headless
-      - .venv/bin/python -c "import torch, ultralytics; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+      - uv sync --python 3.12 --extra {{.TARGET | default "cuda"}}
+      - .venv/bin/python -c "import torch, ultralytics; print('torch', torch.__version__, 'gpu', torch.cuda.is_available())"
 
   train:
-    desc: Fine-tune a ball detector from labels and export ONNX (DATA may list several directories)
+    desc: Fine-tune a ball detector from labels and export ONNX (DATA may list several directories; TARGET=cuda|rocm)
     cmds:
       - task: train-env
+        vars: { TARGET: "{{.TARGET}}" }
       - .venv/bin/python tools/train.py {{.DATA}}
 
   train-server:
-    desc: Serve training over HTTP on port 7882 for a tracker on another machine (BIND=host:port)
+    desc: Serve training over HTTP on port 7882 for a tracker on another machine (BIND=host:port, TARGET=cuda|rocm)
     cmds:
       - task: train-env
+        vars: { TARGET: "{{.TARGET}}" }
       - .venv/bin/python tools/train_server.py --bind {{.BIND | default "0.0.0.0:7882"}}
 
   detect:
@@ -133,3 +130,22 @@ tasks:
       - task: onnxruntime
       - rm -rf dist/release && mkdir -p dist/release
       - cp -a target/release/tracker target/release/*.so* LICENSE config.example.toml dist/release/
+
+  fetch-release:
+    desc: Download the latest Jetson bundle into dist/release instead of building it
+    cmds:
+      - rm -rf dist/release && mkdir -p dist/release
+      - curl -fsSL https://github.com/jermatic1/baseball-tracker/releases/download/latest/tracker-jetson-aarch64.tar.gz | tar -xzf - -C dist/release
+
+  docker-tracker:
+    desc: Build the tracker image from dist/release, from task release or task fetch-release (TARGET=jetson)
+    preconditions:
+      - sh: test -x dist/release/tracker
+        msg: "dist/release is missing: run task release, or task fetch-release on the Jetson"
+    cmds:
+      - docker build -f docker/tracker/Dockerfile --build-arg TARGET={{.TARGET | default "jetson"}} -t ghcr.io/jermatic1/baseball-tracker/tracker:{{.TARGET | default "jetson"}} .
+
+  docker-train:
+    desc: Build the training server image (TARGET=cuda|rocm)
+    cmds:
+      - docker build -f docker/train/Dockerfile --build-arg TARGET={{.TARGET | default "cuda"}} -t ghcr.io/jermatic1/baseball-tracker/train:{{.TARGET | default "cuda"}} .

@@ -60,7 +60,8 @@ main() {
   curl -fsSL "https://github.com/$repo/releases/download/latest/$asset" | tar -xzf - -C "$dest"
   chmod +x "$dest/tracker"
   echo "installed $(cat "$dest/VERSION") in $dest"
-  echo "copy models/ball.onnx into $dest/models, plug the OAK into a USB 3 port, then:"
+
+  echo "plug the OAK into a USB 3 port, then:"
   echo "  cd $dest && ./tracker watch data"
 }
 
