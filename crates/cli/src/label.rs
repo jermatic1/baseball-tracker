@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -78,7 +78,7 @@ struct LabelState {
 }
 
 pub async fn label(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
-    let app = router(&path)?;
+    let app = crate::web::standalone("label", router(&path)?);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|e| e.to_string())?;
@@ -86,9 +86,8 @@ pub async fn label(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }
 
-/// The labelling page and its API over `dir`'s clips, writing
-/// `dir/labels.json`. Its paths are relative, so it can be served under a
-/// prefix ending in `/`.
+/// The label page's API over `dir`'s clips, writing `dir/labels.json`,
+/// under `/api/`, for serving under a session's prefix.
 pub fn router(dir: &std::path::Path) -> Result<Router, String> {
     let session = tracker::DataDir::open(dir).map_err(|e| e.to_string())?;
     let file = session.dir.join("labels.json");
@@ -100,7 +99,6 @@ pub fn router(dir: &std::path::Path) -> Result<Router, String> {
         cached: None,
     }));
     Ok(Router::new()
-        .route("/", get(index))
         .route("/api/session", get(session_api))
         .route("/api/clips/{id}", get(clip_api))
         .route("/api/clips/{id}/frame/{index}", get(frame_api))
@@ -202,10 +200,6 @@ fn interpolate(marks: &[Mark]) -> Vec<Drawn> {
         }
     }
     out
-}
-
-async fn index() -> Html<&'static str> {
-    Html(include_str!("label.html"))
 }
 
 async fn session_api(

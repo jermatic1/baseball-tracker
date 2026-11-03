@@ -21,8 +21,10 @@ mod sessions;
 #[cfg(feature = "detect")]
 mod standby;
 mod train;
+mod users;
 #[cfg(feature = "detect")]
 mod watch;
+mod web;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

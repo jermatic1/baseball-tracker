@@ -7,11 +7,13 @@ vars:
 
 tasks:
   build:
+    deps: [web]
     desc: Build the tracker
     cmds:
       - cargo build -p cli
 
   build-oak:
+    deps: [web]
     desc: Build capture with the OAK camera
     cmds:
       - cargo build -p cli --features oak
@@ -33,6 +35,38 @@ tasks:
       - cargo clippy --workspace --all-targets --features oak -- -D warnings
       - cargo clippy -p cli --all-targets --no-default-features --features detect -- -D warnings
 
+  web-deps:
+    desc: Install the web app's dependencies
+    dir: web
+    cmds:
+      - npm ci
+    sources: [package-lock.json]
+    generates: [node_modules/.package-lock.json]
+
+  web:
+    desc: Type-check and build the web app into web/build, which the tracker embeds
+    deps: [web-deps]
+    dir: web
+    cmds:
+      - npm run check
+      - npm run build
+    sources: [package.json, vite.config.ts, tsconfig.json, src/**/*]
+    generates: [build/index.html]
+
+  web-dev:
+    desc: Serve the web app with hot reload, proxying to a tracker on port 7880 (task mock or task run)
+    deps: [web-deps]
+    dir: web
+    cmds:
+      - npm run dev -- {{.CLI_ARGS}}
+
+  screenshot:
+    desc: Render every page at phone and desktop widths against the mock tracker into dist/screenshots
+    deps: [web]
+    cmds:
+      - cargo build -p cli --quiet
+      - node web/tools/screenshot.mjs
+
   onnxruntime:
     desc: Put the platform's ONNX Runtime next to the release binary
     cmds:
@@ -43,23 +77,25 @@ tasks:
       - ls target/release/libonnxruntime.so*
 
   run:
-    desc: Live tracking; serves the socket, measures every hit and throw while a client is connected or a session is active
-    deps: [onnxruntime]
+    desc: Live tracking; serves the socket, measures every hit and throw while a simulator is connected or a session is active
+    deps: [web, onnxruntime]
     cmds:
       - cargo run -p cli --release --features oak --quiet -- watch {{.DATA}}
 
   replay:
     desc: Replay recorded clips (FROM=data/sessions/3) through the live path without the camera; GAP= seconds between clips, MODEL= for the model
-    deps: [onnxruntime]
+    deps: [web, onnxruntime]
     cmds:
       - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}} --model {{.MODEL | default "models/ball.onnx"}}
 
   mock:
+    deps: [web]
     desc: Serve the socket with no camera, making up a pitch or hit every PERIOD seconds; MODEL= for where Promote writes
     cmds:
       - cargo run -p cli --quiet -- mock {{.DATA}}-mock --period {{.PERIOD | default "4"}} --model {{.MODEL | default "models/ball.onnx"}}
 
   check:
+    deps: [web]
     desc: Format, lint, and test
     cmds:
       - task: fmt
@@ -123,6 +159,7 @@ tasks:
       - cargo run -p cli --release --features oak --quiet -- capture {{.DATA}} --once
 
   release:
+    deps: [web]
     desc: Check, then build the tracker and what it needs to run into dist/release
     cmds:
       - task: check

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::http::{header, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -111,7 +111,6 @@ pub fn router(
     describe(&trainer);
     tokio::spawn(recount_forever(Arc::clone(&trainer)));
     Router::new()
-        .route("/train", get(page))
         .route("/api/train", get(overview).post(start))
         .route("/api/train/job", get(job))
         .route("/api/train/promote", post(promote))
@@ -125,14 +124,6 @@ fn base_url(server: &str) -> String {
     } else {
         format!("http://{server}")
     }
-}
-
-async fn page() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/html")],
-        include_str!("train.html"),
-    )
-        .into_response()
 }
 
 #[derive(Serialize)]

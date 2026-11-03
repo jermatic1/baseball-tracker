@@ -158,7 +158,7 @@ pub(crate) mod server {
 
     use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
     use axum::extract::State;
-    use axum::response::{IntoResponse, Response};
+    use axum::response::Response;
     use axum::routing::get;
     use axum::Router;
     use device::Camera;
@@ -312,26 +312,14 @@ pub(crate) mod server {
         tokio::spawn(preview_producer(app.clone(), Arc::clone(&stopping)));
         tokio::spawn(calibration_sampler(app.clone(), Arc::clone(&stopping)));
         let router = Router::new()
-            .route("/", get(|| page("text/html", include_str!("tracker.html"))))
-            .route(
-                "/setup",
-                get(|| page("text/html", include_str!("setup.html"))),
-            )
-            .route(
-                "/page.js",
-                get(|| page("text/javascript", include_str!("page.js"))),
-            )
-            .route(
-                "/page.css",
-                get(|| page("text/css", include_str!("page.css"))),
-            )
             .route("/api/history", get(history))
-            .route("/games", get(games))
-            .route("/games/{name}", get(game_page))
+            .route("/api/games", get(games))
             .route("/ws", get(ws))
             .with_state(app.clone())
             .merge(crate::sessions::router(root, Arc::clone(&app.hub)))
-            .merge(trainer);
+            .merge(crate::users::router(Arc::clone(&app.hub)))
+            .merge(trainer)
+            .fallback(crate::web::serve);
         let addr: SocketAddr = BIND
             .parse()
             .map_err(|e: std::net::AddrParseError| e.to_string())?;
@@ -447,29 +435,15 @@ pub(crate) mod server {
         }
     }
 
-    async fn page(content_type: &'static str, body: &'static str) -> Response {
-        ([(axum::http::header::CONTENT_TYPE, content_type)], body).into_response()
-    }
-
     async fn history(
         State(app): State<App>,
     ) -> Result<axum::Json<crate::history::History>, crate::error::AppError> {
         Ok(axum::Json(app.hub.history()?))
     }
 
-    /// The registered game modules, for the pages' navigation.
+    /// The registered game modules, for the app's navigation.
     async fn games(State(app): State<App>) -> axum::Json<Vec<String>> {
         axum::Json(app.hub.game_names())
-    }
-
-    async fn game_page(
-        axum::extract::Path(name): axum::extract::Path<String>,
-        State(app): State<App>,
-    ) -> Response {
-        match app.hub.game_page(&name) {
-            Some(html) => page("text/html", html).await,
-            None => (axum::http::StatusCode::NOT_FOUND, "no such game").into_response(),
-        }
     }
 
     async fn ws(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
@@ -484,7 +458,12 @@ pub(crate) mod server {
             match stream.next().await {
                 Some(Ok(Message::Text(text))) => match serde_json::from_str::<ClientMsg>(&text) {
                     Ok(ClientMsg::Hello { client, games, .. }) => {
-                        break (app.hub.join(&client), games)
+                        let games = if crate::hub::is_page(&client) {
+                            app.hub.game_names()
+                        } else {
+                            games
+                        };
+                        break (app.hub.join(&client), games);
                     }
                     _ => {
                         let _ = sink

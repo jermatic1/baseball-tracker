@@ -2,6 +2,7 @@
 //! broadcast channel, who is connected, whether capture is allowed, the
 //! store with the active session, and the game modules.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -177,15 +178,6 @@ impl Hub {
             .unwrap_or_default()
     }
 
-    pub fn game_page(&self, name: &str) -> Option<&'static str> {
-        self.games
-            .lock()
-            .ok()?
-            .iter()
-            .find(|g| g.name() == name)
-            .and_then(|g| g.page())
-    }
-
     pub fn join(&self, name: &str) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut c) = self.clients.lock() {
@@ -345,6 +337,75 @@ impl Hub {
         store.add_user(name).map_err(|e| e.to_string())?;
         self.send(&self.users_msg(&store));
         Ok(())
+    }
+
+    /// Renames a user everywhere: the store and each of their session
+    /// folders, which keep the name too.
+    pub fn rename_user(&self, id: i64, name: &str) -> Result<(), String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        store.rename_user(id, name).map_err(|e| e.to_string())?;
+        for session in store.sessions(Some(id)).map_err(|e| e.to_string())? {
+            let dir = self.session_path(session.id);
+            if let Ok(mut meta) = SessionMeta::load(&dir) {
+                meta.user = Some(name.trim().to_string());
+                meta.save(&dir).map_err(|e| e.to_string())?;
+            }
+        }
+        self.send(&self.users_msg(&store));
+        Ok(())
+    }
+
+    /// Removes a user, and first their sessions when asked; otherwise a
+    /// user with sessions stays.
+    pub fn delete_user(&self, id: i64, with_sessions: bool) -> Result<(), String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        if with_sessions {
+            self.delete_sessions_of(&store, id)?;
+        }
+        store.delete_user(id).map_err(|e| e.to_string())?;
+        self.send(&self.users_msg(&store));
+        Ok(())
+    }
+
+    /// Removes every session a user has, keeping the user.
+    pub fn delete_user_sessions(&self, id: i64) -> Result<(), String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        self.delete_sessions_of(&store, id)
+    }
+
+    /// Removes a session, its events, and its folder of clips and labels.
+    pub fn delete_session(&self, id: i64) -> Result<(), String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        self.remove_session(&store, id)
+    }
+
+    fn delete_sessions_of(&self, store: &Store, user: i64) -> Result<(), String> {
+        for session in store.sessions(Some(user)).map_err(|e| e.to_string())? {
+            self.remove_session(store, session.id)?;
+        }
+        Ok(())
+    }
+
+    /// The active session has to end first; its clips are still being cut.
+    fn remove_session(&self, store: &Store, id: i64) -> Result<(), String> {
+        let active = self
+            .active
+            .read()
+            .map(|a| a.as_ref().is_some_and(|a| a.session.id == id))
+            .unwrap_or(false);
+        if active {
+            return Err(format!("session {id} is running; end it first"));
+        }
+        store.delete_session(id).map_err(|e| e.to_string())?;
+        match std::fs::remove_dir_all(self.session_path(id)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn session_path(&self, id: i64) -> PathBuf {
+        self.root.dir.join("sessions").join(id.to_string())
     }
 
     /// Start a session for a user, ending the active one first. Sends the
@@ -526,10 +587,10 @@ impl Hub {
     /// A session's directory: a snapshot of the live config and the camera
     /// calibration, so the session can be replayed on its own.
     fn session_dir(&self, session: &Session) -> Result<DataDir, String> {
-        self.snapshot_dir(self.root.dir.join("sessions").join(session.id.to_string()))
+        self.snapshot_dir(self.session_path(session.id))
     }
 
-    fn snapshot_dir(&self, dir: std::path::PathBuf) -> Result<DataDir, String> {
+    fn snapshot_dir(&self, dir: PathBuf) -> Result<DataDir, String> {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         self.config()
             .save(dir.join("config.toml"))

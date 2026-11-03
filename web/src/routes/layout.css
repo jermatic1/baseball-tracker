@@ -1,0 +1,84 @@
+@import 'tailwindcss';
+@plugin 'daisyui' {
+	themes: false;
+}
+
+/* The one theme: Tailwind's zinc greys with an emerald primary. daisyUI
+   supplies the components; pages use its classes and Tailwind for layout. */
+@plugin 'daisyui/theme' {
+	name: 'tracker';
+	default: true;
+	color-scheme: dark;
+	--color-base-100: var(--color-zinc-950);
+	--color-base-200: var(--color-zinc-900);
+	--color-base-300: var(--color-zinc-800);
+	--color-base-content: var(--color-zinc-100);
+	--color-primary: var(--color-emerald-600);
+	--color-primary-content: var(--color-white);
+	--color-secondary: var(--color-sky-500);
+	--color-secondary-content: var(--color-white);
+	--color-accent: var(--color-emerald-400);
+	--color-accent-content: var(--color-zinc-950);
+	--color-neutral: var(--color-zinc-200);
+	--color-neutral-content: var(--color-zinc-900);
+	--color-info: var(--color-sky-400);
+	--color-info-content: var(--color-zinc-950);
+	--color-success: var(--color-emerald-400);
+	--color-success-content: var(--color-zinc-950);
+	--color-warning: var(--color-amber-400);
+	--color-warning-content: var(--color-zinc-950);
+	--color-error: var(--color-red-500);
+	--color-error-content: var(--color-white);
+	--radius-selector: 1rem;
+	--radius-field: 0.5rem;
+	--radius-box: 0.75rem;
+	--size-selector: 0.25rem;
+	--size-field: 0.25rem;
+	--border: 1px;
+	--depth: 0;
+	--noise: 0;
+}
+
+@layer base {
+	/* Every size is in rem, so the root size sets the scale: 18px reads at
+	   arm's length on a phone and across a desk. */
+	html {
+		@apply antialiased;
+		font-size: 112.5%;
+	}
+	h1 {
+		@apply text-2xl font-semibold tracking-tight;
+	}
+	h2 {
+		@apply mt-8 mb-3 text-base font-semibold;
+	}
+	code {
+		@apply bg-base-300 rounded px-1 font-mono text-[0.85em];
+	}
+}
+
+@layer components {
+	/* A small caption above a value or a field. */
+	.caption {
+		@apply text-[11px] font-medium tracking-wide uppercase opacity-60;
+	}
+	/* A captioned value in a facts grid. */
+	.fact dd {
+		@apply mt-0.5 text-sm tabular-nums;
+	}
+	/* A bordered box: the card and list surfaces share it. */
+	.surface {
+		@apply bg-base-200 border-base-300 border;
+	}
+	/* Plain buttons sit one step above a surface, so they show on cards. */
+	.btn {
+		--btn-color: var(--color-base-300);
+	}
+}
+
+/* The selected one of a set, on segmented controls and toggles. A utility,
+   so it outranks daisyUI's button rule the way its own variants do. */
+@utility btn-selected {
+	--btn-color: var(--color-neutral);
+	--btn-fg: var(--color-neutral-content);
+}

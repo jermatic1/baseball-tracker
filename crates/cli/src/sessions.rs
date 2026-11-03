@@ -1,14 +1,15 @@
-//! The sessions page, and each session folder's label and playback pages
-//! served under `/sessions/{id}/label/` and `/sessions/{id}/playback/`.
-//! The id `none` is the folder where clips cut with no session active go.
+//! The sessions list, and each session folder's label and playback APIs
+//! served under `/sessions/{id}/label/api/` and `/sessions/{id}/playback/api/`
+//! for the app's pages at the same paths without `api/`. The id `none` is the
+//! folder where clips cut with no session active go.
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, Request, State};
-use axum::http::{header, StatusCode, Uri};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::http::{StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::Serialize;
@@ -47,24 +48,13 @@ pub fn router(root: PathBuf, hub: Arc<Hub>) -> Router {
         routers: Mutex::new(HashMap::new()),
     });
     Router::new()
-        .route("/sessions", get(page))
         .route("/api/sessions", get(list))
-        .route("/api/sessions/{id}", put(update))
-        .route("/sessions/{id}/{page}", get(add_slash))
+        .route("/api/sessions/{id}", put(update).delete(remove))
         .route(
-            "/sessions/{id}/{page}/",
-            get(forward_index).post(forward_index),
+            "/sessions/{id}/{page}/api/{*rest}",
+            get(forward).post(forward),
         )
-        .route("/sessions/{id}/{page}/{*rest}", get(forward).post(forward))
         .with_state(sites)
-}
-
-async fn page() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/html")],
-        include_str!("sessions.html"),
-    )
-        .into_response()
 }
 
 async fn list(State(sites): State<Arc<Sites>>) -> Result<Json<Vec<Row>>, AppError> {
@@ -144,6 +134,28 @@ async fn update(
     }
 }
 
+/// Removes a session with its clips and labels, or every loose clip.
+async fn remove(State(sites): State<Arc<Sites>>, Path(id): Path<String>) -> Response {
+    let result = match id.parse::<i64>() {
+        Ok(session) => sites.hub.delete_session(session),
+        Err(_) if id == NO_SESSION => {
+            match std::fs::remove_dir_all(session_dir(&sites.root, &id)) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        Err(_) => return (StatusCode::BAD_REQUEST, "no such session").into_response(),
+    };
+    if let Err(e) = result {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
+    if let Ok(mut routers) = sites.routers.lock() {
+        routers.retain(|(_, key), _| *key != id);
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 fn clip_count(dir: &FsPath) -> usize {
     tracker::DataDir::open(dir)
         .and_then(|d| d.clip_ids())
@@ -163,19 +175,6 @@ fn resolve(root: &FsPath, id: &str) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// The pages use relative paths, so they need the trailing slash.
-async fn add_slash(Path((id, page)): Path<(String, String)>) -> Redirect {
-    Redirect::permanent(&format!("/sessions/{id}/{page}/"))
-}
-
-async fn forward_index(
-    State(sites): State<Arc<Sites>>,
-    Path((id, page)): Path<(String, String)>,
-    req: Request,
-) -> Response {
-    dispatch(&sites, id, page, "", req).await
-}
-
 async fn forward(
     State(sites): State<Arc<Sites>>,
     Path((id, page, rest)): Path<(String, String, String)>,
@@ -191,8 +190,8 @@ async fn dispatch(sites: &Sites, id: String, page: String, rest: &str, req: Requ
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
     let path = match req.uri().query() {
-        Some(q) => format!("/{rest}?{q}"),
-        None => format!("/{rest}"),
+        Some(q) => format!("/api/{rest}?{q}"),
+        None => format!("/api/{rest}"),
     };
     let uri = match path.parse::<Uri>() {
         Ok(uri) => uri,

@@ -40,6 +40,7 @@ sudo apt install build-essential clang libclang-dev cmake ninja-build pkg-config
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sh -c "$(curl -sL https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
 curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt install nodejs
 task release
 ```
 

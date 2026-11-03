@@ -13,11 +13,6 @@ pub trait Game: Send {
     /// The name front ends list in `hello.games` and the envelope carries.
     fn name(&self) -> &'static str;
 
-    /// The module's own page, served at `/games/<name>`.
-    fn page(&self) -> Option<&'static str> {
-        None
-    }
-
     /// Bodies that bring a front end that just connected up to date.
     fn welcome(&self) -> Vec<Value>;
 

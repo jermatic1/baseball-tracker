@@ -16,6 +16,7 @@ detect = ["dep:ultralytics-inference", "ultralytics-inference/nvidia", "dep:ort"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
 challenges = { path = "../challenges", optional = true }
 clap = { version = "4", features = ["derive"] }
 device = { path = "../device" }

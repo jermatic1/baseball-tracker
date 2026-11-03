@@ -17,7 +17,6 @@ use tracker::{
 };
 
 const EXAMPLE: &str = include_str!("../example.toml");
-const PAGE: &str = include_str!("page.html");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -436,10 +435,6 @@ impl Challenges {
 impl Game for Challenges {
     fn name(&self) -> &'static str {
         "challenges"
-    }
-
-    fn page(&self) -> Option<&'static str> {
-        Some(PAGE)
     }
 
     fn welcome(&self) -> Vec<Value> {

@@ -175,6 +175,55 @@ impl Store {
     }
 
     /// Open a session for a user. The caller ends any active one first.
+    pub fn rename_user(&self, id: i64, name: &str) -> Result<(), TrackerError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(TrackerError::Other("a user needs a name".into()));
+        }
+        let n = self.conn.execute(
+            "UPDATE users SET name = ?1 WHERE id = ?2",
+            params![name, id],
+        )?;
+        if n == 0 {
+            return Err(TrackerError::Other("no such user".into()));
+        }
+        Ok(())
+    }
+
+    /// Removes a user who has no sessions left.
+    pub fn delete_user(&self, id: i64) -> Result<(), TrackerError> {
+        let sessions: i64 = self.conn.query_row(
+            "SELECT count(*) FROM sessions WHERE user = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if sessions > 0 {
+            return Err(TrackerError::Other(format!(
+                "the user still has {sessions} sessions"
+            )));
+        }
+        let n = self
+            .conn
+            .execute("DELETE FROM users WHERE id = ?1", params![id])?;
+        if n == 0 {
+            return Err(TrackerError::Other("no such user".into()));
+        }
+        Ok(())
+    }
+
+    /// Removes a session and its events.
+    pub fn delete_session(&self, id: i64) -> Result<(), TrackerError> {
+        self.conn
+            .execute("DELETE FROM events WHERE session = ?1", params![id])?;
+        let n = self
+            .conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        if n == 0 {
+            return Err(TrackerError::Other("no such session".into()));
+        }
+        Ok(())
+    }
+
     pub fn start_session(
         &self,
         user: i64,
@@ -313,6 +362,30 @@ mod tests {
             hit: None,
             pitch: None,
         }
+    }
+
+    #[test]
+    fn users_rename_and_delete_with_their_sessions() {
+        let store = Store::in_memory().unwrap();
+        let sam = store.add_user("Sam").unwrap();
+        store.rename_user(sam.id, " Samantha ").unwrap();
+        assert_eq!(store.user(sam.id).unwrap().unwrap().name, "Samantha");
+        assert!(store.rename_user(sam.id, "").is_err());
+        assert!(store.rename_user(99, "Nobody").is_err());
+
+        let s = store
+            .start_session(sam.id, Activity::Pitching, Mode::Practice)
+            .unwrap();
+        store
+            .add_event(s.id, &record("0001", EventKind::Pitch))
+            .unwrap();
+        assert!(store.delete_user(sam.id).is_err(), "sessions first");
+        store.delete_session(s.id).unwrap();
+        assert!(store.session(s.id).unwrap().is_none());
+        assert!(store.events(s.id).unwrap().is_empty());
+        assert!(store.delete_session(s.id).is_err());
+        store.delete_user(sam.id).unwrap();
+        assert!(store.users().unwrap().is_empty());
     }
 
     #[test]

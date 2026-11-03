@@ -12,3 +12,4 @@
 *.pt
 /runs/
 __pycache__/
+/.task/

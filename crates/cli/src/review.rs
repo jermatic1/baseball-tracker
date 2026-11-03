@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 
@@ -35,7 +35,7 @@ pub async fn review(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
     for hit in &hits {
         print_hit(hit);
     }
-    let app = router(session, Some(hits));
+    let app = crate::web::standalone("playback", router(session, Some(hits)));
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|e| e.to_string())?;
@@ -43,9 +43,9 @@ pub async fn review(path: PathBuf, bind: SocketAddr) -> Result<(), String> {
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }
 
-/// The playback page and its API over `dir`'s clips, reading the events the
-/// live path filed. It only reads, so it is safe beside a running capture,
-/// and its paths are relative so it can be served under a prefix ending in `/`.
+/// The playback page's API over `dir`'s clips, reading the events the live
+/// path filed. It only reads, so it is safe beside a running capture, and it
+/// is under `/api/` for serving under a session's prefix.
 pub fn live_router(dir: &std::path::Path) -> Result<Router, String> {
     let session = tracker::DataDir::open(dir).map_err(|e| e.to_string())?;
     Ok(router(session, None))
@@ -58,15 +58,10 @@ fn router(session: tracker::DataDir, hits: Option<Vec<tracker::HitRecord>>) -> R
         cached: None,
     }));
     Router::new()
-        .route("/", get(index))
         .route("/api/session", get(session_api))
         .route("/api/clips/{id}", get(clip_api))
         .route("/api/clips/{id}/frame/{index}", get(frame_api))
         .with_state(state)
-}
-
-async fn index() -> Html<&'static str> {
-    Html(include_str!("review.html"))
 }
 
 async fn session_api(
