@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { getJson, sendJson } from '#lib/api.ts';
 	import { live } from '#lib/socket.svelte.ts';
 	import { when } from '#lib/format.ts';
@@ -32,6 +32,16 @@
 	let loaded = $state(false);
 	let filter = $state('');
 	let newTag = $state<Record<string, string>>({});
+	// The re-detection under way or last finished.
+	interface Redetect {
+		session: string;
+		done: number;
+		total: number;
+		running: boolean;
+		error?: string;
+	}
+	let redetect = $state<Redetect | null>(null);
+	let redetectTimer: ReturnType<typeof setInterval> | null = null;
 	// The session the delete dialog is about.
 	let target = $state<Row | null>(null);
 	let dialog = $state<HTMLDialogElement>();
@@ -69,6 +79,32 @@
 		const input = e.target as HTMLInputElement;
 		if (!(await save(s, { notes: input.value }))) input.value = s.notes;
 	}
+	// Polls the re-detection while it runs, and reports how it ended.
+	async function watchRedetect() {
+		try {
+			const r = await getJson<Redetect | null>('/api/redetect');
+			if (redetect?.running && r && !r.running) {
+				if (r.error) live.error = `Re-detect session ${r.session}: ${r.error}`;
+			}
+			redetect = r;
+		} catch {
+			/* the next poll retries */
+		}
+		if (redetect?.running && !redetectTimer) redetectTimer = setInterval(watchRedetect, 1000);
+		if (!redetect?.running && redetectTimer) {
+			clearInterval(redetectTimer);
+			redetectTimer = null;
+		}
+	}
+	async function startRedetect(s: Row) {
+		try {
+			await sendJson('POST', `/api/sessions/${s.id}/redetect`);
+			redetect = { session: s.id, done: 0, total: s.clips, running: true };
+			watchRedetect();
+		} catch (e) {
+			live.error = (e as Error).message;
+		}
+	}
 	function confirmDelete(s: Row) {
 		target = s;
 		dialog?.showModal();
@@ -94,6 +130,10 @@
 			.then((rows) => (sessions = rows))
 			.catch((e) => (live.error = (e as Error).message))
 			.finally(() => (loaded = true));
+		watchRedetect();
+	});
+	onDestroy(() => {
+		if (redetectTimer) clearInterval(redetectTimer);
 	});
 </script>
 
@@ -125,6 +165,9 @@
 					{#if s.exposure != null}<span class="badge badge-ghost badge-sm">{s.exposure} µs · ISO {s.gain}</span>{/if}
 					{#if s.calibration_changed}<span class="badge badge-soft badge-warning badge-sm" title="the mount differs from the previous session's">recalibrated</span>{/if}
 					{#if s.trained}<span class="badge badge-soft badge-success badge-sm">in the live model</span>{/if}
+					{#if redetect?.running && redetect.session === s.id}
+						<span class="badge badge-soft badge-warning badge-sm"><span class="loading loading-spinner loading-xs"></span>re-detecting {redetect.done} of {redetect.total}</span>
+					{/if}
 				</div>
 				<div class="mt-3 flex flex-wrap items-center gap-2">
 					{#each s.tags as t (t)}
@@ -158,6 +201,7 @@
 					{#if s.clips > 0}
 						<a href="/sessions/{s.id}/label" class="btn btn-sm">Label</a>
 						<a href="/sessions/{s.id}/playback" class="btn btn-sm">Playback</a>
+						<button class="btn btn-sm" disabled={!!redetect?.running} title="Detect again with the live model" onclick={() => startRedetect(s)}>Re-detect</button>
 					{/if}
 					<button class="btn btn-sm btn-error btn-soft" onclick={() => confirmDelete(s)}>Delete</button>
 				</div>

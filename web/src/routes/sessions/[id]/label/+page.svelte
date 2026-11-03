@@ -48,6 +48,8 @@
 	let status = $state('');
 	let canvas = $state<HTMLCanvasElement>();
 	let zoom = $state<HTMLCanvasElement>();
+	let zoomSide = $state<'left' | 'right'>('right');
+	let zoomShown = $state(false);
 	let tracksEl = $state<HTMLUListElement>();
 	let showKeys = $state(false);
 	const session = page.params.id === 'local' ? '' : page.params.id;
@@ -200,6 +202,11 @@
 	function magnify(ev: MouseEvent) {
 		if (!bitmap || !zoom) return;
 		const p = imagePoint(ev);
+		const r = canvas!.getBoundingClientRect();
+		const nearCorner = ev.clientY - r.top < 220;
+		if (nearCorner && zoomSide === 'right' && r.right - ev.clientX < 220) zoomSide = 'left';
+		if (nearCorner && zoomSide === 'left' && ev.clientX - r.left < 220) zoomSide = 'right';
+		zoomShown = true;
 		const s = 22;
 		const zctx = zoom.getContext('2d')!;
 		zctx.imageSmoothingEnabled = false;
@@ -355,14 +362,22 @@
 				<label class="ml-auto flex items-center gap-2 text-sm opacity-80">Box <input type="number" min="8" max="80" bind:value={box} onchange={draw} class="input input-sm w-18" /></label>
 				<label class="flex items-center gap-2 text-sm opacity-80">Step <input type="number" min="1" max="8" bind:value={step} class="input input-sm w-16" /></label>
 			</div>
-			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-			<canvas
-				bind:this={canvas}
-				class="rounded-box mt-3 w-full cursor-crosshair bg-black"
-				onclick={(ev) => { const p = imagePoint(ev); save('ball', p.x, p.y); }}
-				onmousemove={magnify}
-			></canvas>
-			<canvas bind:this={zoom} width="180" height="180" class="rounded-field border-base-300 fixed top-16 right-3 hidden border bg-black pointer-fine:block"></canvas>
+			<div class="relative mt-3">
+				<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+				<canvas
+					bind:this={canvas}
+					class="rounded-box block w-full cursor-crosshair bg-black"
+					onclick={(ev) => { const p = imagePoint(ev); save('ball', p.x, p.y); }}
+					onmousemove={magnify}
+					onmouseleave={() => (zoomShown = false)}
+				></canvas>
+				<canvas
+					bind:this={zoom}
+					width="180"
+					height="180"
+					class="rounded-field border-base-300 pointer-events-none absolute top-3 hidden border bg-black {zoomSide === 'right' ? 'right-3' : 'left-3'} {zoomShown ? 'pointer-fine:block' : ''}"
+				></canvas>
+			</div>
 			<p class="mt-3 text-sm opacity-70">Click the ball. Gaps of up to 12 frames fill in a straight line.</p>
 		{/if}
 	</section>

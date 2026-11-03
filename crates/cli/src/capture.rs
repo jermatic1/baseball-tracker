@@ -98,7 +98,21 @@ async fn capture_oak(path: PathBuf) -> Result<(), String> {
     let (cam, calib) = open_oak(&session)?;
     let hub = crate::hub::Hub::open(session.clone())?;
     let model = crate::DEFAULT_MODEL.into();
-    server::run(session, cam, exposure_us, gain, calib, None, hub, model).await
+    let bind = crate::DEFAULT_BIND
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
+    server::run(
+        session,
+        cam,
+        exposure_us,
+        gain,
+        calib,
+        None,
+        hub,
+        model,
+        bind,
+    )
+    .await
 }
 
 /// Open the OAK at the session's capture settings and save its calibration
@@ -176,7 +190,6 @@ pub(crate) mod server {
         Status,
     };
 
-    const BIND: &str = "0.0.0.0:7880";
     const RECORD_QUEUE: usize = 32;
     const STATUS_PERIOD: Duration = Duration::from_millis(500);
     const PREVIEW_PERIOD: Duration = Duration::from_millis(100);
@@ -274,13 +287,14 @@ pub(crate) mod server {
         live: Option<LiveTap>,
         hub: Arc<Hub>,
         model: PathBuf,
+        bind: SocketAddr,
     ) -> Result<(), String> {
         let stopping = Arc::new(AtomicBool::new(false));
         let root = session.dir.clone();
         let trainer = crate::train::router(
             root.clone(),
             &session.config.training.server,
-            model,
+            model.clone(),
             Arc::clone(&hub),
             live.as_ref().map(|tap| Arc::clone(&tap.reload)),
         );
@@ -316,18 +330,15 @@ pub(crate) mod server {
             .route("/api/games", get(games))
             .route("/ws", get(ws))
             .with_state(app.clone())
-            .merge(crate::sessions::router(root, Arc::clone(&app.hub)))
+            .merge(crate::sessions::router(root, Arc::clone(&app.hub), model))
             .merge(crate::users::router(Arc::clone(&app.hub)))
             .merge(trainer)
             .fallback(crate::web::serve);
-        let addr: SocketAddr = BIND
-            .parse()
-            .map_err(|e: std::net::AddrParseError| e.to_string())?;
-        let listener = tokio::net::TcpListener::bind(addr)
+        let listener = tokio::net::TcpListener::bind(bind)
             .await
             .map_err(|e| e.to_string())?;
-        println!("http://{BIND}  ws://{BIND}/ws");
-        match crate::discovery::spawn(addr.port()) {
+        println!("http://{bind}  ws://{bind}/ws");
+        match crate::discovery::spawn(bind.port()) {
             Ok(()) => println!("discovery udp://0.0.0.0:{}", crate::discovery::PORT),
             Err(e) => eprintln!("discovery off: {e}"),
         }

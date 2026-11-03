@@ -1,7 +1,8 @@
 //! The sessions list, and each session folder's label and playback APIs
 //! served under `/sessions/{id}/label/api/` and `/sessions/{id}/playback/api/`
 //! for the app's pages at the same paths without `api/`. The id `none` is the
-//! folder where clips cut with no session active go.
+//! folder where clips cut with no session active go. A
+//! session can be detected over again with the live model, one at a time.
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
@@ -10,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Path, Request, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 use tower::ServiceExt;
@@ -33,23 +34,41 @@ struct Row {
     meta: SessionMeta,
 }
 
+/// The re-detection under way or last finished, for the page to show.
+#[derive(Debug, Clone, Default, Serialize)]
+struct Redetect {
+    session: String,
+    done: usize,
+    total: usize,
+    running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 struct Sites {
     root: PathBuf,
     hub: Arc<Hub>,
+    /// The model the pages promote to, and re-detection runs with.
+    model: PathBuf,
+    redetect: Arc<Mutex<Option<Redetect>>>,
     /// One router per (page, id), built on first visit, so a folder's
     /// labels stay in one place however many tabs have it open.
     routers: Mutex<HashMap<(String, String), Router>>,
 }
 
-pub fn router(root: PathBuf, hub: Arc<Hub>) -> Router {
+pub fn router(root: PathBuf, hub: Arc<Hub>, model: PathBuf) -> Router {
     let sites = Arc::new(Sites {
         root,
         hub,
+        model,
+        redetect: Arc::new(Mutex::new(None)),
         routers: Mutex::new(HashMap::new()),
     });
     Router::new()
         .route("/api/sessions", get(list))
         .route("/api/sessions/{id}", put(update).delete(remove))
+        .route("/api/sessions/{id}/redetect", post(redetect))
+        .route("/api/redetect", get(redetect_status))
         .route(
             "/sessions/{id}/{page}/api/{*rest}",
             get(forward).post(forward),
@@ -154,6 +173,56 @@ async fn remove(State(sites): State<Arc<Sites>>, Path(id): Path<String>) -> Resp
         routers.retain(|(_, key), _| *key != id);
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+async fn redetect_status(State(sites): State<Arc<Sites>>) -> Json<Option<Redetect>> {
+    Json(sites.redetect.lock().ok().and_then(|r| r.clone()))
+}
+
+/// Runs the live model over a session's clips in the background, one
+/// session at a time, rewriting each clip's detections.
+#[cfg(feature = "detect")]
+async fn redetect(State(sites): State<Arc<Sites>>, Path(id): Path<String>) -> Response {
+    let Some(dir) = resolve(&sites.root, &id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    let job = Arc::clone(&sites.redetect);
+    {
+        let Ok(mut slot) = job.lock() else {
+            return AppError("re-detection state poisoned".into()).into_response();
+        };
+        if slot.as_ref().is_some_and(|r| r.running) {
+            return (StatusCode::CONFLICT, "a re-detection is already running").into_response();
+        }
+        *slot = Some(Redetect {
+            session: id,
+            total: clip_count(&dir),
+            running: true,
+            ..Redetect::default()
+        });
+    }
+    let model = sites.model.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = crate::detect::run(&dir, &model, None, &mut |_, _, _| {
+            if let Ok(mut slot) = job.lock() {
+                if let Some(r) = slot.as_mut() {
+                    r.done += 1;
+                }
+            }
+        });
+        if let Ok(mut slot) = job.lock() {
+            if let Some(r) = slot.as_mut() {
+                r.running = false;
+                r.error = result.err();
+            }
+        }
+    });
+    StatusCode::ACCEPTED.into_response()
+}
+
+#[cfg(not(feature = "detect"))]
+async fn redetect(State(_): State<Arc<Sites>>, Path(_): Path<String>) -> Response {
+    (StatusCode::NOT_IMPLEMENTED, "built without the detector").into_response()
 }
 
 fn clip_count(dir: &FsPath) -> usize {

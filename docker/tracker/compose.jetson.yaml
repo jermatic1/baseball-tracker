@@ -12,6 +12,19 @@ services:
     device_cgroup_rules:
       - "c 189:* rmw"
 
+  # Play a recorded session through the live path beside the tracker, with
+  # its pages on port 7881: SESSION=3 docker compose run --rm replay
+  replay:
+    image: ghcr.io/jermatic1/baseball-tracker/tracker:jetson
+    runtime: nvidia
+    network_mode: host
+    profiles: [replay]
+    volumes:
+      - ./data:/data
+      - ./data-replay:/data-replay
+      - ./models:/opt/tracker/models
+    command: watch /data-replay --from /data/sessions/${SESSION:-1} --gap 2 --bind 0.0.0.0:7881
+
   # To train on the board too: uncomment, mkdir runs, and set the tracker's
   # [training] server to http://localhost:7882.
   # train-server:

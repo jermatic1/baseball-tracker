@@ -86,6 +86,7 @@ pub async fn watch(
     model: String,
     from: Option<PathBuf>,
     gap: f64,
+    bind: std::net::SocketAddr,
 ) -> Result<(), String> {
     let session = DataDir::create(&path).map_err(|e| e.to_string())?;
     let detector = Detector::load(&model)?;
@@ -157,6 +158,7 @@ pub async fn watch(
         Some(tap),
         hub,
         model.into(),
+        bind,
     )
     .await?;
     let pending = || {

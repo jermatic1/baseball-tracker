@@ -39,6 +39,7 @@ use review::review;
 
 /// The model the tracker loads and the Train page replaces.
 const DEFAULT_MODEL: &str = "models/ball.onnx";
+const DEFAULT_BIND: &str = "0.0.0.0:7880";
 
 #[derive(Parser)]
 #[command(name = "tracker")]
@@ -90,6 +91,8 @@ enum Command {
         /// Where the Train page promotes a new model to.
         #[arg(long, default_value = DEFAULT_MODEL)]
         model: PathBuf,
+        #[arg(long, default_value = DEFAULT_BIND)]
+        bind: SocketAddr,
     },
     /// Track live: serve the socket, and while a client is
     /// connected find the ball in every frame, measure each hit or throw,
@@ -104,6 +107,10 @@ enum Command {
         /// Seconds of silence between replayed clips.
         #[arg(long, default_value_t = 1.0)]
         gap: f64,
+        /// Address for the pages and the socket; a replay can take another
+        /// port beside the live tracker.
+        #[arg(long, default_value = DEFAULT_BIND)]
+        bind: SocketAddr,
     },
 }
 
@@ -133,24 +140,32 @@ async fn run() -> Result<(), String> {
             data,
             period,
             model,
-        } => mock::mock(data, period, model).await,
+            bind,
+        } => mock::mock(data, period, model, bind).await,
         Command::Watch {
             data,
             model,
             from,
             gap,
-        } => watch(data, model, from, gap).await,
+            bind,
+        } => watch(data, model, from, gap, bind).await,
     }
 }
 
-async fn watch(dir: PathBuf, model: String, from: Option<PathBuf>, gap: f64) -> Result<(), String> {
+async fn watch(
+    dir: PathBuf,
+    model: String,
+    from: Option<PathBuf>,
+    gap: f64,
+    bind: SocketAddr,
+) -> Result<(), String> {
     #[cfg(feature = "detect")]
     {
-        watch::watch(dir, model, from, gap).await
+        watch::watch(dir, model, from, gap, bind).await
     }
     #[cfg(not(feature = "detect"))]
     {
-        let _ = (dir, model, from, gap);
+        let _ = (dir, model, from, gap, bind);
         Err("rebuild with --features detect".into())
     }
 }

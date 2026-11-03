@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use tracker::{DetFrame, Detections, StereoCalib};
@@ -6,7 +6,21 @@ use tracker::{DetFrame, Detections, StereoCalib};
 use crate::detector::{Detector, FrameView};
 
 pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Result<(), String> {
-    let session = tracker::DataDir::open(&path).map_err(|e| e.to_string())?;
+    run(&path, model.as_ref(), clip, &mut |id, n, fps| {
+        println!("{id} detections={n} {fps:.0} fps")
+    })
+}
+
+/// Detects over a session's clips, or one, with the live model and saves
+/// each clip's detections, telling `progress` each clip's id, how many balls
+/// it found, and its frames per second.
+pub fn run(
+    path: &Path,
+    model: &Path,
+    clip: Option<String>,
+    progress: &mut dyn FnMut(&str, usize, f64),
+) -> Result<(), String> {
+    let session = tracker::DataDir::open(path).map_err(|e| e.to_string())?;
     let mut detector = Detector::load(&model)?;
     let mut ids = session.clip_ids().map_err(|e| e.to_string())?;
     if let Some(clip) = clip {
@@ -56,7 +70,7 @@ pub async fn detect(path: PathBuf, model: String, clip: Option<String>) -> Resul
         session
             .save_detections(&id, &Detections { frames })
             .map_err(|e| e.to_string())?;
-        println!("{id} detections={n} {fps:.0} fps");
+        progress(&id, n, fps);
     }
     Ok(())
 }

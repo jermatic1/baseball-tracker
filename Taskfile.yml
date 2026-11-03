@@ -83,10 +83,10 @@ tasks:
       - cargo run -p cli --release --features oak --quiet -- watch {{.DATA}}
 
   replay:
-    desc: Replay recorded clips (FROM=data/sessions/3) through the live path without the camera; GAP= seconds between clips, MODEL= for the model
+    desc: Replay recorded clips (FROM=data/sessions/3) through the live path without the camera, on port 7881 beside a live tracker; GAP= seconds between clips, MODEL= for the model
     deps: [web, onnxruntime]
     cmds:
-      - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}} --model {{.MODEL | default "models/ball.onnx"}}
+      - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}} --model {{.MODEL | default "models/ball.onnx"}} --bind {{.BIND | default "0.0.0.0:7881"}}
 
   mock:
     deps: [web]
