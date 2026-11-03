@@ -1,5 +1,5 @@
 //! The live tracker's standby: the camera and the detector come up when the
-//! hub wants them (a client is connected or a session is active) and are
+//! hub wants them (see `hub::Gate`) and are
 //! released once it has not wanted them for [`GRACE`], so the camera stops
 //! streaming and the detector's GPU memory is free for other work.
 
@@ -24,9 +24,10 @@ const STANDBY_POLL: Duration = Duration::from_millis(50);
 
 /// What the detector thread is told about the engine it runs.
 pub enum Engine {
-    /// The camera is up: detect with this model and stereo geometry.
+    /// The camera is up: detect with this model, if there is one, and
+    /// stereo geometry.
     Start {
-        detector: Detector,
+        detector: Option<Detector>,
         calib: StereoCalib,
     },
     /// A promoted model, to replace the running one; dropped in standby.
@@ -103,10 +104,12 @@ impl Lifecycle {
 }
 
 pub type Open = Box<dyn FnMut() -> Result<(Box<dyn Camera + Send>, StereoCalib), String> + Send>;
-pub type Load = Box<dyn Fn() -> Result<Detector, String> + Send>;
+/// Loads the detector, or none when no model file exists yet.
+pub type Load = Box<dyn Fn() -> Result<Option<Detector>, String> + Send>;
 
 /// A camera that is only open while the hub wants it. Opening it loads the
-/// detector first, then the camera, and hands both to the detector thread;
+/// detector first, when there is a model, then the camera, and hands both
+/// to the detector thread;
 /// releasing it closes the camera and tells the detector thread to drop the
 /// detector. While closed, polls return no frame.
 pub struct OnDemand {
@@ -162,7 +165,10 @@ impl OnDemand {
         let ok = match up {
             Ok((detector, camera, calib)) => {
                 if let Ok(mut s) = self.status.lock() {
-                    s.provider = detector.provider().to_string();
+                    s.provider = detector
+                        .as_ref()
+                        .map(|d| d.provider().to_string())
+                        .unwrap_or_default();
                 }
                 self.camera = Some(camera);
                 let _ = self.engine.send(Engine::Start { detector, calib });

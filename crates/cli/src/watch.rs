@@ -2,13 +2,14 @@
 //! a watcher that cuts the windows where a ball moved, and a coordinator
 //! that measures each window, broadcasts its events, records them under the
 //! active session, and saves it as a clip. The web pages run from startup,
-//! but the camera and the detector come up only while a client is connected
-//! or a session is active, and are released a while after neither is true
-//! (see `standby`). Detection pauses during calibration. A promoted model
-//! loads on its own thread while the old one keeps detecting, then is
-//! handed to the detector thread, which swaps it in between frames; in
-//! standby it is built and dropped, so the next start finds its engine
-//! cached.
+//! but the camera and the detector come up only while the hub wants them
+//! (see `hub::Gate`), and are released a while after it stops (see
+//! `standby`). Detection pauses during calibration. With no model file yet
+//! the camera still runs, for the preview and for recording clips to label.
+//! A promoted model loads on its own thread while the old one keeps
+//! detecting, then is handed to the detector thread, which swaps it in
+//! between frames; in standby it is built and dropped, so the next start
+//! finds its engine cached.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -36,11 +37,23 @@ const QUEUE: usize = 300;
 /// How often the detector thread checks for engine changes with no frames.
 const ENGINE_POLL: Duration = Duration::from_millis(200);
 
-/// A finished window: where its clip was written and the session it
-/// belongs to, fixed when the window opened.
-struct Finished {
+/// Where a window's clip goes and the session it belongs to, fixed when
+/// the window opens.
+struct Target {
     dir: DataDir,
     session: Option<i64>,
+}
+
+impl Target {
+    fn now(hub: &Hub) -> Self {
+        let (dir, session) = hub.target();
+        Self { dir, session }
+    }
+}
+
+/// A finished window and its clip id.
+struct Finished {
+    target: Target,
     id: String,
     episode: Episode,
 }
@@ -73,10 +86,8 @@ struct Models {
 impl Models {
     fn load(&self, model: &Path) -> Result<(Detector, tracker::ModelInfo), String> {
         let _one = self.lock.lock().map_err(|e| e.to_string())?;
-        let live = tracker::model_record::live_model(model);
-        let conf = tracker::model_record::live_conf(&live, self.conf);
-        let detector = Detector::load_warm(&live, conf, self.width, self.height)?;
-        let info = model_info(&live, detector.model_hash());
+        let detector = Detector::load_warm(model, self.conf, self.width, self.height)?;
+        let info = model_info(model, detector.model_hash());
         Ok((detector, info))
     }
 }
@@ -89,9 +100,19 @@ pub async fn watch(
     bind: std::net::SocketAddr,
 ) -> Result<(), String> {
     let session = DataDir::create(&path).map_err(|e| e.to_string())?;
-    let detector = Detector::load(&model)?;
     let hub = Hub::open(session.clone())?;
-    hub.set_model(model_info(Path::new(&model), &detector));
+    let model_path = Path::new(&model);
+    if model_path.is_file() {
+        hub.set_model(model_info(
+            model_path,
+            &tracker::model_record::file_sha1(model_path)?,
+        ));
+        println!("live model: {model}");
+    } else {
+        println!(
+            "no detector at {model}: record clips from the tracker page, label them, and train one"
+        );
+    }
     #[cfg(feature = "challenges")]
     hub.register(Box::new(challenges::Challenges::load(&session.dir)?));
     let (open, calib) = camera(&session, from, gap)?;
@@ -128,9 +149,12 @@ pub async fn watch(
         let hub = Arc::clone(&hub);
         let model = PathBuf::from(&model);
         Box::new(move || {
+            if !model.is_file() {
+                return Ok(None);
+            }
             let (detector, info) = models.load(&model)?;
             hub.set_model(info);
-            Ok(detector)
+            Ok(Some(detector))
         })
     };
     let cam = OnDemand::new(
@@ -287,11 +311,14 @@ fn detect_loop(
     let cfg: WatchConfig = session.config.watch.clone();
     let c = session.config.capture.clone();
     let mut engine: Option<Running> = None;
+    // The stereo geometry while the camera is up, so a model promoted
+    // before any exists can start detecting at once.
+    let mut up: Option<StereoCalib> = None;
     let mut watcher = Watcher::new(cfg.clone());
     let mut ring: VecDeque<(usize, Arc<StoredFrame>)> = VecDeque::new();
     let preroll_ns = (cfg.preroll * 1e9) as u64;
     let mut writer: Option<ClipWriter> = None;
-    let mut target: Option<(DataDir, Option<i64>)> = None;
+    let mut target: Option<Target> = None;
     let mut index = 0usize;
     let mut taken = 0u64;
     let mut meter = (Instant::now(), 0u32);
@@ -330,25 +357,44 @@ fn detect_loop(
         while let Ok(change) = control.try_recv() {
             match change {
                 Engine::Start { detector, calib } => {
-                    engine = Some(Running {
+                    up = Some(calib);
+                    engine = detector.map(|detector| Running {
                         detector,
                         calib,
                         rectifier: session.rectifier(c.width, c.height),
                     });
                     watcher = Watcher::new(cfg.clone());
                     meter = (Instant::now(), 0);
-                    set_status(&|s| s.state = "idle".into());
+                    let state = if engine.is_some() {
+                        "idle"
+                    } else {
+                        "no detector"
+                    };
+                    set_status(&|s| s.state = state.into());
                 }
-                Engine::Swap(next) => match engine.as_mut() {
-                    Some(running) => {
+                Engine::Swap(next) => match (engine.as_mut(), &up) {
+                    (Some(running), _) => {
                         running.detector = next;
                         println!("detector: swapped in the promoted model");
                     }
-                    None => println!("detector: the promoted model is ready for the next start"),
+                    (None, Some(calib)) => {
+                        engine = Some(Running {
+                            detector: next,
+                            calib: *calib,
+                            rectifier: session.rectifier(c.width, c.height),
+                        });
+                        meter = (Instant::now(), 0);
+                        set_status(&|s| s.state = "idle".into());
+                        println!("detector: the promoted model is live");
+                    }
+                    (None, None) => {
+                        println!("detector: the promoted model is ready for the next start")
+                    }
                 },
                 Engine::Release => {
+                    up = None;
                     if let Some(episode) = gate_closed(&mut watcher) {
-                        let target = target.take().unwrap_or_else(|| hub.target());
+                        let target = target.take().unwrap_or_else(|| Target::now(&hub));
                         finish_episode(target, writer.take(), episode, &c, &done);
                     }
                     ring.clear();
@@ -374,7 +420,7 @@ fn detect_loop(
         }
         let Some(running) = engine.as_mut().filter(|_| hub.capturing()) else {
             if let Some(episode) = gate_closed(&mut watcher) {
-                let target = target.take().unwrap_or_else(|| hub.target());
+                let target = target.take().unwrap_or_else(|| Target::now(&hub));
                 finish_episode(target, writer.take(), episode, &c, &done);
             }
             ring.clear();
@@ -405,22 +451,23 @@ fn detect_loop(
         let was_open = watcher.state() == WatchState::Episode;
         let episode = watcher.observe(index, frame.t_ns, balls);
         if !was_open && watcher.state() == WatchState::Episode {
-            target = Some(hub.target());
+            target = Some(Target::now(&hub));
         }
         ring.push_back((index, Arc::clone(&frame)));
         let cutoff = frame.t_ns.saturating_sub(preroll_ns);
         while ring.front().is_some_and(|(_, f)| f.t_ns < cutoff) {
             ring.pop_front();
         }
-        if cfg.keep_clips {
+        if target.is_some() && cfg.keep_clips {
             let result = if was_open {
                 writer.as_mut().map_or(Ok(()), |w| w.write(&frame))
-            } else if let Some((dir, _)) = target
+            } else if let Some(t) = target
                 .as_ref()
                 .filter(|_| watcher.state() == WatchState::Episode)
             {
                 let start = watcher.window_start().unwrap_or(index);
-                dir.begin_clip(c.exposure, c.gain, 0.0, 0.0, calib)
+                t.dir
+                    .begin_clip(c.exposure, c.gain, 0.0, 0.0, calib)
                     .and_then(|w| {
                         let mut w = w.without_depth();
                         for (_, f) in ring.iter().filter(|(i, _)| *i >= start) {
@@ -438,7 +485,7 @@ fn detect_loop(
             }
         }
         if let Some(episode) = episode {
-            let target = target.take().unwrap_or_else(|| hub.target());
+            let target = target.take().unwrap_or_else(|| Target::now(&hub));
             finish_episode(target, writer.take(), episode, &c, &done);
         }
         index += 1;
@@ -446,7 +493,7 @@ fn detect_loop(
         report(&watcher, boxes, taken, &mut meter);
     }
     if let Some(episode) = watcher.flush() {
-        let target = target.take().unwrap_or_else(|| hub.target());
+        let target = target.take().unwrap_or_else(|| Target::now(&hub));
         finish_episode(target, writer.take(), episode, &c, &done);
     }
     Ok(())
@@ -461,7 +508,7 @@ fn gate_closed(watcher: &mut Watcher) -> Option<Episode> {
 
 /// Close the clip for a finished window and hand it to the coordinator.
 fn finish_episode(
-    (dir, session): (DataDir, Option<i64>),
+    target: Target,
     writer: Option<ClipWriter>,
     episode: Episode,
     c: &tracker::CaptureConfig,
@@ -469,7 +516,7 @@ fn finish_episode(
 ) {
     let id = match writer {
         Some(w) => w.finish(),
-        None => dir.next_clip_id().and_then(|id| {
+        None => target.dir.next_clip_id().and_then(|id| {
             let meta = ClipMeta {
                 width: c.width,
                 height: c.height,
@@ -481,15 +528,14 @@ fn finish_episode(
                 ir_flood: 0.0,
                 ir_dot: 0.0,
             };
-            dir.write_clip_meta(&id, &meta)?;
+            target.dir.write_clip_meta(&id, &meta)?;
             Ok(id)
         }),
     };
     match id {
         Ok(id) => {
             let _ = done.send(Finished {
-                dir,
-                session,
+                target,
                 id,
                 episode,
             });
@@ -507,12 +553,12 @@ async fn coordinate(
     intr: Intrinsics,
 ) -> Result<(), String> {
     while let Some(Finished {
-        dir,
-        session,
+        target,
         id,
         episode,
     }) = rx.recv().await
     {
+        let dir = target.dir;
         let frames = episode.as_clip();
         dir.save_detections(
             &id,
@@ -543,7 +589,7 @@ async fn coordinate(
         for r in &records {
             print_hit(r);
         }
-        hub.publish(&dir, session, &id, records)?;
+        hub.publish(&dir, target.session, &id, records)?;
         if let Ok(mut s) = status.lock() {
             s.clips += 1;
             s.last_event = summary;

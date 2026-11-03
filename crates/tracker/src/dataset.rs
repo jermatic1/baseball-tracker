@@ -910,7 +910,7 @@ mod tests {
         let root = temp("archive");
         let dir = root.join("sessions/3");
         session(&dir);
-        let model = root.join("ball.onnx");
+        let model = root.join("detector.onnx");
         fs::write(&model, b"onnx").unwrap();
         let chosen = Chosen {
             include: vec![SessionRef {

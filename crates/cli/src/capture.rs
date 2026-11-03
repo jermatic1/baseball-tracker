@@ -560,7 +560,7 @@ pub(crate) mod server {
             }
         }
         if preview.swap(false, Ordering::Relaxed) {
-            app.hub.preview_subs.fetch_sub(1, Ordering::Relaxed);
+            app.hub.watch_preview(false);
         }
         app.hub.leave(id);
         writer.abort();
@@ -591,11 +591,7 @@ pub(crate) mod server {
             ClientMsg::Game { game, body } => app.hub.game_message(&game, body),
             ClientMsg::Preview { enabled } => {
                 if preview.swap(enabled, Ordering::Relaxed) != enabled {
-                    if enabled {
-                        app.hub.preview_subs.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        app.hub.preview_subs.fetch_sub(1, Ordering::Relaxed);
-                    }
+                    app.hub.watch_preview(enabled);
                 }
                 Ok(())
             }
@@ -622,11 +618,8 @@ pub(crate) mod server {
                 Ok(())
             }
             ClientMsg::Record { action } => match action {
-                RecordAction::Start => {
-                    let mut st = app.state.lock().map_err(|e| e.to_string())?;
-                    start_record(&mut st)
-                }
-                RecordAction::Stop => stop_record(app).await.map(|id| println!("saved clip {id}")),
+                RecordAction::Start => start_record(app),
+                RecordAction::Stop => stop_record(app).await,
             },
             ClientMsg::Calibrate { action, corners } => match action {
                 CalibrateAction::Start => {
@@ -646,15 +639,19 @@ pub(crate) mod server {
         }
     }
 
-    fn start_record(st: &mut CaptureState) -> Result<(), String> {
+    /// Record a clip by hand into the active session, or the data directory
+    /// when none is. Recording keeps the camera up, so frames arrive once
+    /// it has started.
+    fn start_record(app: &App) -> Result<(), String> {
+        let mut st = app.state.lock().map_err(|e| e.to_string())?;
         if st.stop.load(Ordering::Relaxed) {
             return Err("stopping".into());
         }
         if st.record_tx.is_some() {
             return Err("already recording".into());
         }
-        let writer = st
-            .session
+        let (dir, _) = app.hub.target();
+        let writer = dir
             .begin_clip(st.exposure_us, st.gain, st.ir_flood, st.ir_dot, st.calib)
             .map_err(|e| e.to_string())?;
         let (tx, rx) = mpsc::sync_channel(RECORD_QUEUE);
@@ -662,23 +659,34 @@ pub(crate) mod server {
         std::thread::spawn(move || record_loop(writer, rx, done_tx));
         st.record_tx = Some(tx);
         st.record_done = Some(done_rx);
+        app.hub.set_recording(true);
         println!("recording");
         Ok(())
     }
 
-    async fn stop_record(app: &App) -> Result<String, String> {
+    /// Finish the clip and tell every client where it went.
+    async fn stop_record(app: &App) -> Result<(), String> {
         let done = {
             let mut st = app.state.lock().map_err(|e| e.to_string())?;
             st.record_tx.take();
             st.record_done.take()
         };
+        app.hub.set_recording(false);
         let Some(done) = done else {
             return Err("not recording".into());
         };
-        tokio::task::spawn_blocking(move || done.recv())
+        let clip = tokio::task::spawn_blocking(move || done.recv())
             .await
             .map_err(|e| e.to_string())?
-            .map_err(|_| "recorder stopped".to_string())?
+            .map_err(|_| "recorder stopped".to_string())??;
+        let session = app
+            .hub
+            .target()
+            .1
+            .map_or_else(|| "none".to_string(), |id| id.to_string());
+        println!("saved clip {clip} in session {session}");
+        app.hub.send(&ServerMsg::Recorded { session, clip });
+        Ok(())
     }
 
     /// Save the latest good plate fit as the session's mount.
@@ -777,7 +785,7 @@ pub(crate) mod server {
         let mut last_t = 0u64;
         while !stop.load(Ordering::Relaxed) {
             tokio::time::sleep(PREVIEW_PERIOD).await;
-            if app.hub.preview_subs.load(Ordering::Relaxed) == 0 {
+            if !app.hub.previewing() {
                 continue;
             }
             let frame = app.state.lock().ok().and_then(|st| st.latest.clone());

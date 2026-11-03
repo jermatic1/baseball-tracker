@@ -119,6 +119,12 @@ pub enum ServerMsg {
         clip: String,
         record: HitRecord,
     },
+    /// A clip recorded by hand was saved under `session` (`none` for the
+    /// loose clips' folder), ready to label.
+    Recorded {
+        session: String,
+        clip: String,
+    },
     /// A plate fit while calibration mode is on; `applied` once saved.
     /// `warnings` say why the fit looks wrong; it can still be applied.
     Calibration {
@@ -395,7 +401,7 @@ mod tests {
             ir_dot: 0.0,
             mount: mount.clone(),
             model: ModelStatus {
-                file: "ball.onnx".into(),
+                file: "detector.onnx".into(),
                 sha1: "abc1234".into(),
                 promoted: Some("2026-10-31T12:00:00Z".into()),
                 untrained: 2,

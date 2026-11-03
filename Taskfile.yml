@@ -86,13 +86,13 @@ tasks:
     desc: Replay recorded clips (FROM=data/sessions/3) through the live path without the camera, on port 7881 beside a live tracker; GAP= seconds between clips, MODEL= for the model
     deps: [web, onnxruntime]
     cmds:
-      - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}} --model {{.MODEL | default "models/ball.onnx"}} --bind {{.BIND | default "0.0.0.0:7881"}}
+      - cargo run -p cli --release --quiet -- watch {{.DATA}}-replay --from {{.FROM}} --gap {{.GAP}} --model {{.MODEL | default "models/detector.onnx"}} --bind {{.BIND | default "0.0.0.0:7881"}}
 
   mock:
     deps: [web]
     desc: Serve the socket with no camera, making up a pitch or hit every PERIOD seconds; MODEL= for where Promote writes
     cmds:
-      - cargo run -p cli --quiet -- mock {{.DATA}}-mock --period {{.PERIOD | default "4"}} --model {{.MODEL | default "models/ball.onnx"}}
+      - cargo run -p cli --quiet -- mock {{.DATA}}-mock --period {{.PERIOD | default "4"}} --model {{.MODEL | default "models/detector.onnx"}}
 
   check:
     deps: [web]
@@ -151,7 +151,7 @@ tasks:
     desc: Detect balls in saved clips
     deps: [onnxruntime]
     cmds:
-      - cargo run -p cli --release --quiet -- detect {{.DATA}} --model {{.MODEL | default "models/ball.onnx"}} {{if .CLIP}}--clip {{.CLIP}}{{end}}
+      - cargo run -p cli --release --quiet -- detect {{.DATA}} --model {{.MODEL | default "models/detector.onnx"}} {{if .CLIP}}--clip {{.CLIP}}{{end}}
 
   camera:
     desc: Open the OAK and write one frame

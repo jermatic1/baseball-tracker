@@ -29,22 +29,28 @@ pub struct FrameView<'a> {
 }
 
 impl Detector {
-    pub fn load(model: &str) -> Result<Self, String> {
-        Self::open(model, None)
+    /// Load `model`, keeping detections of at least `conf` confidence.
+    pub fn load(model: &Path, conf: f32) -> Result<Self, String> {
+        Self::open(model, conf, None)
     }
 
     /// Load `model` and run one `width`x`height` frame through it, so its
     /// engine is built. On failure the previous model's engine cache is kept.
-    pub fn load_warm(model: &str, width: u32, height: u32) -> Result<Self, String> {
-        Self::open(model, Some((width, height)))
+    pub fn load_warm(model: &Path, conf: f32, width: u32, height: u32) -> Result<Self, String> {
+        Self::open(model, conf, Some((width, height)))
     }
 
-    fn open(model: &str, warm: Option<(u32, u32)>) -> Result<Self, String> {
+    fn open(model: &Path, conf: f32, warm: Option<(u32, u32)>) -> Result<Self, String> {
+        if !model.is_file() {
+            return Err(format!("no detector at {}", model.display()));
+        }
         let provider = runtime()?;
         ultralytics_inference::logging::set_verbose(false);
-        let config = InferenceConfig::default().with_quantize(Quantization::Fp16);
-        let cache = engine_cache_dir(Path::new(model));
-        let hash = tracker::model_record::file_sha1(Path::new(model))?;
+        let config = InferenceConfig::default()
+            .with_quantize(Quantization::Fp16)
+            .with_confidence(conf);
+        let cache = engine_cache_dir(model);
+        let hash = tracker::model_record::file_sha1(model)?;
         let aside = set_aside_stale_cache(&cache, &hash)?;
         if aside.is_some() {
             println!(
@@ -85,7 +91,10 @@ impl Detector {
                 })
             }
         };
-        println!("detector {model} on {provider}");
+        println!(
+            "detector: loaded {} on {provider}, conf {conf:.2}",
+            model.display()
+        );
         Ok(detector)
     }
 

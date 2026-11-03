@@ -269,7 +269,14 @@
 				const session = await getJson<{ clips?: string[] }>(`${base}/session`);
 				await loadLabels();
 				clips = session.clips || [];
-				if (clips.length) selectClip(clips[0]);
+				// Open the clip the link named, in frames mode when the
+				// detector saw nothing in it, as in a clip recorded by hand.
+				const wanted = page.url.searchParams.get('clip');
+				const first = wanted && clips.includes(wanted) ? wanted : clips[0];
+				if (first) {
+					await selectClip(first);
+					if (!tracks.length) setMode('frames');
+				}
 			} catch (e) {
 				status = (e as Error).message;
 			}

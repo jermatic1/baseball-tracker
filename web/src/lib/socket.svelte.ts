@@ -76,6 +76,12 @@ export interface Event {
 	record: HitRecord;
 }
 
+/** A clip recorded by hand, under its session id (`none` for the data directory). */
+export interface Recorded {
+	session: string;
+	clip: string;
+}
+
 export interface SessionStats {
 	session: number;
 	pitches: number;
@@ -108,6 +114,8 @@ export const live = $state({
 	users: [] as User[],
 	/** The newest first, at most twenty. */
 	events: [] as Event[],
+	/** The last clip recorded by hand, until the next one starts. */
+	recorded: null as Recorded | null,
 	stats: null as SessionStats | null,
 	summary: null as SessionSummary | null,
 	error: '',
@@ -202,6 +210,9 @@ function keep(m: Message) {
 			break;
 		case 'event':
 			live.events = [m, ...live.events].slice(0, 20);
+			break;
+		case 'recorded':
+			live.recorded = m;
 			break;
 		case 'session_stats':
 			live.stats = m;

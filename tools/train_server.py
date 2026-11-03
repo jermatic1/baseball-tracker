@@ -7,7 +7,7 @@ train.py, export ONNX, score the new and current models on the held-out set.
 
   POST /train            -> 202 {"job": id} | 409 {"error": "busy"}
   GET  /jobs/<id>        -> {"state", "log", "result"}
-  GET  /jobs/<id>/model  -> ball.onnx once done
+  GET  /jobs/<id>/model  -> detector.onnx once done
   GET  /health           -> {"ok": true, "busy": bool}
 
 The job itself runs in a child process (--job) so its output is the job log.
@@ -161,7 +161,7 @@ def run_job(job, epochs, imgsz, device):
     if frames is None:
         frames = len(list((bundle / "train" / "images").glob("*/*.jpg")))
     best, ran = train.fit(data, epochs, imgsz, (job / "fit").resolve(), device)
-    model = train.export_onnx(best, imgsz, job / "ball.onnx")
+    model = train.export_onnx(best, imgsz, job / "detector.onnx")
     holdout = bundle / "holdout"
     candidate = current = None
     if (holdout / "images").is_dir() and any((holdout / "images").glob("*.jpg")):
@@ -277,7 +277,7 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def send_model(self, job):
-        model = job["dir"] / "ball.onnx"
+        model = job["dir"] / "detector.onnx"
         if job["state"] != "done" or not model.is_file():
             return self.send_json(404, {"error": "model not ready"})
         self.send_response(200)
@@ -344,7 +344,7 @@ def self_test():
     gate = threading.Event()
 
     def launch(job):
-        (job / "ball.onnx").write_bytes(b"onnx")
+        (job / "detector.onnx").write_bytes(b"onnx")
         (job / "result.json").write_text(json.dumps({"epochs": 1}))
         gate.wait(5)
         return True

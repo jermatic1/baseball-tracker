@@ -1,4 +1,4 @@
-//! `ball.toml` beside the detector model: the model's SHA-1, when it was
+//! `detector.toml` beside the detector model: the model's SHA-1, when it was
 //! promoted, the sessions it trained on, and its scores on the held-out
 //! sessions. It describes the model only while the SHA-1 matches the file.
 
@@ -83,7 +83,7 @@ mod tests {
     fn round_trips_beside_the_model() {
         let dir = std::env::temp_dir().join(format!("model-record-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let model = dir.join("ball.onnx");
+        let model = dir.join("detector.onnx");
         assert_eq!(ModelRecord::load(&model).unwrap(), None);
         let record = ModelRecord {
             sha1: "abc".into(),
@@ -93,7 +93,7 @@ mod tests {
             scores: [("recall".to_string(), 0.91), ("map50".to_string(), 0.88)].into(),
         };
         record.save(&model).unwrap();
-        assert!(dir.join("ball.toml").is_file());
+        assert!(dir.join("detector.toml").is_file());
         assert_eq!(ModelRecord::load(&model).unwrap(), Some(record));
         std::fs::remove_dir_all(&dir).unwrap();
     }

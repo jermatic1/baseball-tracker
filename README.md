@@ -59,7 +59,7 @@ Everything lives in a data directory, `data` by default.
 2. **Calibrate** once per camera placement: with the plate clear, press Calibrate on the setup page.
 3. **Hit.** Add a user, start a session on the tracker page, and hit. Every moving ball is measured, sent to connected simulators, and saved as a clip.
 4. **Review.** The sessions page lists every session with playback of its clips.
-5. **Train** when the detector misses balls or fires on something else: label a session, mark it to include, and press Train. Promote the result when it scores better.
+5. **Train** when there is no detector yet, or it misses balls or fires on something else. With no detector, Record on the tracker page saves clips to label by clicking the ball. Label a session, mark it to include, and press Train. Promote the result when it scores better.
 
 Training runs on a training server, `task train-server` on a machine with a GPU, with its address under `[training]` in the config.
 

@@ -38,7 +38,7 @@ use label::label;
 use review::review;
 
 /// The model the tracker loads and the Train page replaces.
-const DEFAULT_MODEL: &str = "models/ball.onnx";
+const DEFAULT_MODEL: &str = "models/detector.onnx";
 const DEFAULT_BIND: &str = "0.0.0.0:7880";
 
 #[derive(Parser)]

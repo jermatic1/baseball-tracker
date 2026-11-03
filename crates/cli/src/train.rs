@@ -31,7 +31,7 @@ const CANDIDATE: &str = "ball-candidate.onnx";
 /// The running model, set aside while its replacement loads.
 const PREVIOUS: &str = "ball-previous.onnx";
 /// A promoted model that failed to load.
-const FAILED: &str = "ball-failed.onnx";
+const FAILED: &str = "detector-failed.onnx";
 /// How often the untrained-session count is recounted.
 const RECOUNT: Duration = Duration::from_secs(5);
 
@@ -84,7 +84,7 @@ struct Trainer {
     root: PathBuf,
     /// Base URL with no trailing slash; empty when none is configured.
     server: String,
-    /// The model the tracker loaded.
+    /// Where Promote installs a model; none is live until it exists.
     model: PathBuf,
     job: Mutex<Job>,
     hub: Arc<Hub>,
@@ -404,7 +404,7 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
 
 /// Write `bytes` as the candidate beside `model` and rename it into place,
 /// keeping the old model aside until `load` has the new one running. If it
-/// fails to load, the candidate goes aside as `ball-failed.onnx` and the
+/// fails to load, the candidate goes aside as `detector-failed.onnx` and the
 /// old model returns.
 fn install(model: &Path, bytes: &[u8], load: Option<&Loader>) -> Result<(), String> {
     if bytes.is_empty() {
@@ -484,17 +484,20 @@ fn record(sha1: String, job: &Job) -> ModelRecord {
 /// Put the model file, its SHA-1, and its record when it matches into the
 /// status.
 fn describe(t: &Trainer) {
-    let sha1 = file_sha1(&t.model).ok();
+    let live = &t.model;
+    let sha1 = file_sha1(live).ok();
     let record = sha1.as_deref().and_then(|sha1| {
-        ModelRecord::load(&t.model)
+        ModelRecord::load(live)
             .ok()
             .flatten()
             .filter(|r| r.sha1 == sha1)
     });
-    let file = t
-        .model
-        .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let file = if sha1.is_some() {
+        live.file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+    } else {
+        String::new()
+    };
     t.hub.update_model_status(|m| {
         m.file = file;
         m.sha1 = sha1.map_or_else(String::new, |s| s.chars().take(7).collect());
@@ -587,7 +590,7 @@ mod tests {
     #[test]
     fn promoting_renames_the_candidate_over_the_model() {
         let dir = std::env::temp_dir().join(format!("train-install-{}", std::process::id()));
-        let model = dir.join("models/ball.onnx");
+        let model = dir.join("models/detector.onnx");
         install(&model, b"new", None).unwrap();
         assert_eq!(std::fs::read(&model).unwrap(), b"new");
         let loads: Loader = Arc::new(|_| Ok(()));
@@ -603,7 +606,7 @@ mod tests {
     #[test]
     fn a_model_that_fails_to_load_is_set_aside_and_the_old_one_kept() {
         let dir = std::env::temp_dir().join(format!("train-failed-{}", std::process::id()));
-        let model = dir.join("models/ball.onnx");
+        let model = dir.join("models/detector.onnx");
         install(&model, b"old", None).unwrap();
         let fails: Loader = Arc::new(|_| Err("bad graph".into()));
         let err = install(&model, b"broken", Some(&fails)).unwrap_err();

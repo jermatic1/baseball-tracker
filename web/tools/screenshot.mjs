@@ -1,6 +1,6 @@
 // Renders every page of the app at phone and desktop widths against the mock
-// tracker, then the tracker page between sessions and with the tracker gone,
-// for checking layouts. Run from the repository root by
+// tracker, then the tracker page between sessions, with the tracker gone,
+// and with no detector yet, for checking layouts. Run from the repository root by
 // `task screenshot`; output lands in dist/screenshots. CHROME names the
 // browser executable when it is not on the path as chromium or chrome.
 import { spawn, spawnSync } from 'node:child_process';
@@ -67,11 +67,13 @@ try {
 	if (!(e instanceof TypeError)) throw e;
 }
 
-const mock = spawn(
-	`${root}target/debug/tracker`,
-	['mock', 'data-mock', '--period', '2', '--model', 'models/detector.onnx'],
-	{ cwd: root, stdio: ['ignore', 'ignore', 'inherit'] }
-);
+const startMock = (model) =>
+	spawn(`${root}target/debug/tracker`, ['mock', 'data-mock', '--period', '2', '--model', model], {
+		cwd: root,
+		stdio: ['ignore', 'ignore', 'inherit']
+	});
+
+let mock = startMock('models/detector.onnx');
 try {
 	await waitForTracker();
 	mkdirSync(out, { recursive: true });
@@ -110,6 +112,17 @@ try {
 		mock.kill('SIGINT');
 		await page.waitForSelector('::-p-text(Not connected)');
 		await shoot(page, 'offline-phone');
+		await page.close();
+		// A fresh install: no detector, so the tracker page offers to record.
+		mock = startMock('models/missing.onnx');
+		await waitForTracker();
+		for (const [size, viewport] of Object.entries(sizes)) {
+			const fresh = await browser.newPage();
+			await fresh.setViewport(viewport);
+			await open(fresh, '/');
+			await shoot(fresh, `tracker-no-detector-${size}`);
+			await fresh.close();
+		}
 	} finally {
 		await browser.close();
 	}

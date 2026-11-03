@@ -142,6 +142,18 @@ impl Default for FlightConfig {
     }
 }
 
+/// The ball detector's minimum confidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DetectorConfig {
+    pub conf: f32,
+}
+
+impl Default for DetectorConfig {
+    fn default() -> Self {
+        Self { conf: 0.25 }
+    }
+}
+
 /// Where the Train page sends datasets. Empty means no server.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrainingConfig {
@@ -165,6 +177,8 @@ pub struct Config {
     pub flight: FlightConfig,
     #[serde(default)]
     pub zone: ZoneConfig,
+    #[serde(default)]
+    pub detector: DetectorConfig,
     #[serde(default)]
     pub training: TrainingConfig,
 }
@@ -194,6 +208,7 @@ impl Config {
             pitching: PitchingConfig::default(),
             flight: FlightConfig::default(),
             zone: ZoneConfig::default(),
+            detector: DetectorConfig::default(),
             training: TrainingConfig::default(),
         }
     }

@@ -2,7 +2,7 @@
 //! broadcast channel, who is connected, whether capture is allowed, the
 //! store with the active session, and the game modules.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -15,24 +15,35 @@ use tracker::{
 
 use crate::protocol::{ModelStatus, ServerMsg, SessionInfo, UserInfo};
 
-/// The camera and detector are wanted while a client is connected or a
-/// session is active; detection runs while they are wanted, except during
-/// calibration.
+/// Detection runs while a session is active or a client other than a page
+/// is connected, except during calibration. The camera is wanted then, and
+/// also while calibrating, recording a clip by hand, or while a client
+/// watches the preview, which need frames but not detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gate {
-    pub clients: usize,
+    /// Connected clients that are not pages.
+    pub players: usize,
     pub session: bool,
     pub calibrating: bool,
+    pub recording: bool,
+    pub preview: bool,
 }
 
 impl Gate {
     pub fn wanted(&self) -> bool {
-        self.clients > 0 || self.session
+        self.players > 0 || self.session || self.calibrating || self.recording || self.preview
     }
 
     pub fn capturing(&self) -> bool {
-        self.wanted() && !self.calibrating
+        (self.players > 0 || self.session) && !self.calibrating
     }
+}
+
+/// Whether a client's hello names one of the tracker's own web pages, which
+/// connect as "page" or "<name> page" and do not start the camera by
+/// connecting.
+pub fn is_page(client: &str) -> bool {
+    client == "page" || client.ends_with(" page")
 }
 
 #[derive(Debug, Clone)]
@@ -62,10 +73,11 @@ pub struct Hub {
     pub tx: broadcast::Sender<Outbound>,
     clients: Mutex<Vec<Client>>,
     next_id: AtomicU64,
-    pub preview_subs: AtomicUsize,
+    preview_subs: AtomicUsize,
     wanted: AtomicBool,
     capturing: AtomicBool,
     calibrating: AtomicBool,
+    recording: AtomicBool,
     /// The live config; an applied calibration lands here and in the file.
     pub config: RwLock<Config>,
     root: DataDir,
@@ -110,6 +122,7 @@ impl Hub {
             wanted: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
             calibrating: AtomicBool::new(false),
+            recording: AtomicBool::new(false),
             config: RwLock::new(root.config.clone()),
             controls: Mutex::new((root.config.capture.exposure, root.config.capture.gain)),
             model: RwLock::new(None),
@@ -221,6 +234,26 @@ impl Hub {
         self.calibrating.load(Ordering::Relaxed)
     }
 
+    /// A clip is being recorded by hand, which keeps the camera up.
+    pub fn set_recording(&self, on: bool) {
+        self.recording.store(on, Ordering::Relaxed);
+        self.recompute();
+    }
+
+    /// Count a client subscribing to or dropping the preview.
+    pub fn watch_preview(&self, on: bool) {
+        if on {
+            self.preview_subs.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.preview_subs.fetch_sub(1, Ordering::Relaxed);
+        }
+        self.recompute();
+    }
+
+    pub fn previewing(&self) -> bool {
+        self.preview_subs.load(Ordering::Relaxed) > 0
+    }
+
     /// Whether the camera and the detector should be running.
     #[cfg_attr(not(feature = "detect"), allow(dead_code))]
     pub fn wanted(&self) -> bool {
@@ -233,9 +266,15 @@ impl Hub {
 
     fn recompute(&self) {
         let gate = Gate {
-            clients: self.clients.lock().map(|c| c.len()).unwrap_or(0),
+            players: self
+                .clients
+                .lock()
+                .map(|c| c.iter().filter(|client| !is_page(&client.name)).count())
+                .unwrap_or(0),
             session: self.active.read().is_ok_and(|a| a.is_some()),
             calibrating: self.calibrating.load(Ordering::Relaxed),
+            recording: self.recording.load(Ordering::Relaxed),
+            preview: self.previewing(),
         };
         self.wanted.store(gate.wanted(), Ordering::Relaxed);
         self.capturing.store(gate.capturing(), Ordering::Relaxed);
@@ -743,36 +782,65 @@ mod tests {
 
     #[test]
     fn gate_rule() {
-        let g = |clients, session, calibrating| Gate {
-            clients,
+        let g = |players, session, calibrating, preview| Gate {
+            players,
             session,
             calibrating,
+            recording: false,
+            preview,
         };
-        assert!(!g(0, false, false).wanted());
-        assert!(!g(0, false, false).capturing());
-        assert!(g(1, false, false).capturing());
-        assert!(g(3, false, false).capturing());
-        assert!(g(0, true, false).capturing());
-        assert!(!g(1, false, true).capturing());
-        assert!(!g(0, true, true).capturing());
-        assert!(g(1, false, true).wanted());
+        assert!(!g(0, false, false, false).wanted());
+        assert!(!g(0, false, false, false).capturing());
+        assert!(g(1, false, false, false).capturing());
+        assert!(g(3, false, false, false).capturing());
+        assert!(g(0, true, false, false).capturing());
+        assert!(!g(1, false, true, false).capturing());
+        assert!(!g(0, true, true, false).capturing());
+        assert!(g(1, false, true, false).wanted());
+        // Calibration and the preview need frames, not detection.
+        assert!(g(0, false, true, false).wanted());
+        assert!(g(0, false, false, true).wanted());
+        assert!(!g(0, false, false, true).capturing());
+        let recording = Gate {
+            recording: true,
+            ..g(0, false, false, false)
+        };
+        assert!(recording.wanted());
+        assert!(!recording.capturing());
     }
 
     #[test]
-    fn clients_drive_capture_and_last_leave_clears_calibration() {
+    fn pages_do_not_open_the_gate_but_their_preview_and_calibration_do() {
         let hub = test_hub();
-        assert!(!hub.capturing());
-        let a = hub.join("sim");
-        let b = hub.join("page");
-        assert!(hub.capturing());
-        assert_eq!(hub.client_names(), vec!["sim", "page"]);
+        let tracker = hub.join("tracker page");
+        let setup = hub.join("setup page");
+        assert!(!hub.wanted());
+        hub.watch_preview(true);
+        assert!(hub.wanted() && !hub.capturing());
+        hub.watch_preview(false);
+        assert!(!hub.wanted());
+        hub.set_calibrating(true);
+        assert!(hub.wanted() && !hub.capturing());
+        hub.leave(tracker);
+        assert!(hub.calibrating());
+        hub.leave(setup);
+        assert!(!hub.calibrating() && !hub.wanted());
+    }
+
+    #[test]
+    fn other_clients_drive_capture() {
+        let hub = test_hub();
+        let page = hub.join("page");
+        assert!(!hub.wanted());
+        let sim = hub.join("sim");
+        assert!(hub.wanted() && hub.capturing());
+        assert_eq!(hub.client_names(), vec!["page", "sim"]);
         hub.set_calibrating(true);
         assert!(!hub.capturing());
-        hub.leave(a);
-        assert!(hub.calibrating());
-        hub.leave(b);
-        assert!(!hub.calibrating());
-        assert!(!hub.capturing());
+        hub.set_calibrating(false);
+        hub.leave(sim);
+        assert!(!hub.wanted());
+        hub.leave(page);
     }
 
     #[test]

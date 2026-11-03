@@ -153,7 +153,7 @@ mod tests {
                 yaw: 0.5,
             }),
             model: Some(ModelInfo {
-                file: "ball.onnx".into(),
+                file: "detector.onnx".into(),
                 sha1: "abc".into(),
             }),
         };

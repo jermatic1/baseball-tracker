@@ -273,7 +273,7 @@ def best_weights(project, trainer=None):
     raise SystemExit("best.pt not found; training did not write weights")
 
 
-def export_onnx(best, imgsz, dest=Path("models/ball.onnx")):
+def export_onnx(best, imgsz, dest=Path("models/detector.onnx")):
     """Export at the frame's own shape: height rounded up to the stride, so a
     640x400 frame is padded by a few rows and never scaled."""
     from ultralytics import YOLO

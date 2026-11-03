@@ -21,7 +21,7 @@ pub fn run(
     progress: &mut dyn FnMut(&str, usize, f64),
 ) -> Result<(), String> {
     let session = tracker::DataDir::open(path).map_err(|e| e.to_string())?;
-    let mut detector = Detector::load(&model)?;
+    let mut detector = Detector::load(model, session.config.detector.conf)?;
     let mut ids = session.clip_ids().map_err(|e| e.to_string())?;
     if let Some(clip) = clip {
         let id = match clip.parse::<u32>() {

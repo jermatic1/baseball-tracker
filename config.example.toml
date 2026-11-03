@@ -63,6 +63,10 @@ width = 17
 bottom = 18
 top = 42
 
+# The minimum confidence a detection must have.
+[detector]
+conf = 0.25
+
 # The training server the Train page sends datasets to, as a base URL such
 # as http://gpu-box:7882 (task train-server on that machine). Empty means
 # none is configured.

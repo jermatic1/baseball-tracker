@@ -93,9 +93,42 @@
 
 	const startSession = () => send({ type: 'start_session', user, activity, mode });
 	const endSession = () => live.session && send({ type: 'end_session', session: live.session.id });
+
+	// With no trained detector the page offers a hand recording to label.
+	let noDetector = $derived(!!live.status?.model && !live.status.model.file);
+	function record() {
+		live.recorded = null;
+		send({ type: 'record', action: 'start' });
+	}
+	const stopRecord = () => send({ type: 'record', action: 'stop' });
 </script>
 
 <h1>Tracker</h1>
+
+{#if noDetector}
+	<div role="status" class="card surface mt-4">
+		<div class="card-body gap-3">
+			<p class="text-warning">
+				No detector yet. Record a few hits, click the ball through each one on the label page,
+				then train from the <a href="/train" class="link">Train</a> page.
+			</p>
+			<div class="flex items-center justify-between gap-2">
+				<span class="min-w-0 text-sm">
+					{#if live.status?.recording}
+						<span class="opacity-70">{live.status.camera ? 'Recording' : 'Starting the camera'}</span>
+					{:else if live.recorded}
+						<a class="btn btn-sm btn-primary" href="/sessions/{live.recorded.session}/label?clip={live.recorded.clip}">Label clip {live.recorded.clip}</a>
+					{/if}
+				</span>
+				{#if live.status?.recording}
+					<button class="btn btn-sm" onclick={stopRecord}>Stop</button>
+				{:else}
+					<button class="btn btn-sm" disabled={!live.status} onclick={record}>Record</button>
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
 
 <div class="card surface mt-4">
 	<div class="card-body">
