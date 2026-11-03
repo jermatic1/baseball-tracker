@@ -16,6 +16,9 @@
 	let calibrating = $state(false);
 	let dots: number[][] = [];
 	let touched = $state(false);
+	// Clear puts the page in manual mode: taps place corners instead of
+	// picking a plate.
+	let manual = $state(false);
 	let shown: Message = null;
 	let dragging = -1;
 	let sendTimer: ReturnType<typeof setTimeout> | undefined;
@@ -85,6 +88,10 @@
 		if (m.source === 'auto' && !m.applied) {
 			if (touched) return;
 			dots = m.found ? m.corners.map((p: number[]) => [p[0], p[1]]) : [];
+		} else if (m.source === 'picked' && !m.applied) {
+			dots = m.found ? m.corners.map((p: number[]) => [p[0], p[1]]) : [];
+			touched = false;
+			manual = false;
 		} else if (m.source === 'clicked' && !m.applied && dots.length < 5) {
 			return;
 		}
@@ -148,6 +155,7 @@
 		calibrating = on;
 		dots = [];
 		touched = false;
+		manual = false;
 		shown = null;
 		dragging = -1;
 		dotCount = 0;
@@ -181,9 +189,15 @@
 		if (!calibrating) return;
 		const p = framePoint(e);
 		dragging = dots.findIndex((d) => Math.hypot(d[0] - p.x, d[1] - p.y) <= p.reach);
-		if (dragging < 0 && dots.length < 5) {
-			dots.push([p.x, p.y]);
-			editedDots();
+		if (dragging < 0) {
+			if (manual) {
+				if (dots.length < 5) {
+					dots.push([p.x, p.y]);
+					editedDots();
+				}
+			} else {
+				send({ type: 'calibrate', action: 'pick', point: [p.x, p.y] });
+			}
 		}
 		if (dragging >= 0) view.setPointerCapture(e.pointerId);
 		e.preventDefault();
@@ -201,6 +215,7 @@
 	}
 	function clear() {
 		dots = [];
+		manual = true;
 		editedDots();
 	}
 	function step(key: keyof typeof controls, delta: number) {
@@ -291,10 +306,10 @@
 					</div>
 					{#if plateFit}
 						<p class="opacity-70">
-							{plateFit.applied ? 'Applied' : 'Fitted'} from {plateFit.source === 'auto' ? 'the detected plate' : 'your corners'} · {plateFit.rms.toFixed(2)} px error
+							{plateFit.applied ? 'Applied' : 'Fitted'} from {plateFit.source === 'auto' ? 'the detected plate' : plateFit.source === 'picked' ? 'the plate you tapped' : 'your corners'} · {plateFit.rms.toFixed(2)} px error
 						</p>
 					{:else if !touched}
-						<p class="opacity-70">Plate not found. Tap its corners.</p>
+						<p class="opacity-70">Plate not found. Tap the white of the plate.</p>
 					{/if}
 					{#each warnings as w (w)}
 						<p class="text-error">{w}</p>
@@ -326,7 +341,12 @@
 						<button class="btn" disabled={!hasDots} onclick={clear}>Clear</button>
 					</div>
 					<p class="opacity-70">
-						Tap the five corners in order around the plate, from any corner, and drag a dot to move it. Green is the corners, yellow the fitted pose.
+						{#if manual}
+							Tap the five corners in order around the plate, from any corner, and drag a dot to move it.
+						{:else}
+							Tap the plate to pick it, and drag a dot if a corner is off. Clear to place the corners yourself.
+						{/if}
+						Green is the corners, yellow the fitted pose.
 					</p>
 				{:else}
 					<p class="opacity-70">Once per camera placement, with the plate clear.</p>

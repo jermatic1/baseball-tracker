@@ -43,6 +43,9 @@ pub enum ClientMsg {
         action: CalibrateAction,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         corners: Option<Vec<[f64; 2]>>,
+        /// Where the user tapped, for `pick`, in frame pixels.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        point: Option<[f64; 2]>,
     },
     /// A new user, from the tracker's own page.
     AddUser {
@@ -100,6 +103,8 @@ pub enum CalibrateAction {
     Stop,
     /// Fit the pose to corners clicked by the user.
     Corners,
+    /// Fit the pose to the plate the user tapped.
+    Pick,
 }
 
 /// Where a calibration fit's corners came from.
@@ -108,6 +113,7 @@ pub enum CalibrateAction {
 pub enum FitSource {
     Auto,
     Clicked,
+    Picked,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -319,10 +325,17 @@ mod tests {
         roundtrip(ClientMsg::Calibrate {
             action: CalibrateAction::Apply,
             corners: None,
+            point: None,
+        });
+        roundtrip(ClientMsg::Calibrate {
+            action: CalibrateAction::Pick,
+            corners: None,
+            point: Some([320.0, 300.0]),
         });
         roundtrip(ClientMsg::Calibrate {
             action: CalibrateAction::Corners,
             corners: Some(vec![[1.0, 2.0]; 5]),
+            point: None,
         });
     }
 

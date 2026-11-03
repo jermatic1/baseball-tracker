@@ -200,6 +200,45 @@ pub fn calibrate_from_frame(
         .min_by(|a, b| a.1.rms_px.total_cmp(&b.1.rms_px))
 }
 
+/// The plate the user pointed at: the pentagon containing the point, else
+/// the nearest, among those a pose fits.
+pub fn calibrate_at(
+    gray: &[u8],
+    w: u32,
+    h: u32,
+    cfg: &Config,
+    point: (f64, f64),
+) -> Option<(PlateCorners, PoseFit)> {
+    let intr = Intrinsics::from_fov(w, h, 80.0, 55.0);
+    let mut fits: Vec<(f64, PlateCorners, PoseFit)> = find_plates(gray, w, h)
+        .into_iter()
+        .filter_map(|corners| solve_pose(&corners, &intr, &cfg.mount).map(|fit| (corners, fit)))
+        .filter(|(_, fit)| fit.rms_px <= MAX_RMS_PX && fit.mount.height > 0.0)
+        .map(|(corners, fit)| (distance_to(&corners, point), corners, fit))
+        .collect();
+    fits.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.2.rms_px.total_cmp(&b.2.rms_px)));
+    fits.into_iter().next().map(|(_, c, f)| (c, f))
+}
+
+/// Zero inside the outline, else the distance to its centre.
+fn distance_to(corners: &PlateCorners, (x, y): (f64, f64)) -> f64 {
+    let pts = &corners.px;
+    let mut inside = false;
+    for i in 0..5 {
+        let (x1, y1) = pts[i];
+        let (x2, y2) = pts[(i + 1) % 5];
+        if (y1 > y) != (y2 > y) && x < (x2 - x1) * (y - y1) / (y2 - y1) + x1 {
+            inside = !inside;
+        }
+    }
+    if inside {
+        return 0.0;
+    }
+    let cx = pts.iter().map(|p| p.0).sum::<f64>() / 5.0;
+    let cy = pts.iter().map(|p| p.1).sum::<f64>() / 5.0;
+    (cx - x).hypot(cy - y)
+}
+
 /// Shortest plate edge on screen, in pixels, that clicks can place well.
 const MIN_EDGE_PX: f64 = 15.0;
 /// Median stereo-versus-fit depth disagreement tolerated, as a fraction.
@@ -659,6 +698,21 @@ mod tests {
         assert!((m.lateral - truth.lateral).abs() < 0.07, "{msg}");
         assert!((m.yaw - truth.yaw).abs() < 0.5, "{msg}");
         assert!((m.pitch - truth.pitch).abs() < 0.5, "{msg}");
+    }
+
+    #[test]
+    fn a_tap_picks_the_plate_it_lands_on_or_the_nearest() {
+        let intr = Intrinsics::from_fov(640, 400, 80.0, 55.0);
+        let (img, corners) = render(&rig(), &intr);
+        let cfg = Config::example();
+        let cx = corners.iter().map(|c| c.0).sum::<f64>() / 5.0;
+        let cy = corners.iter().map(|c| c.1).sum::<f64>() / 5.0;
+        let (found, fit) = calibrate_at(&img, 640, 400, &cfg, (cx, cy)).expect("tapped inside");
+        assert_eq!(distance_to(&found, (cx, cy)), 0.0);
+        assert!(fit.rms_px <= MAX_RMS_PX);
+        let (nearest, _) = calibrate_at(&img, 640, 400, &cfg, (5.0, 5.0)).expect("nearest plate");
+        assert_eq!(nearest, found);
+        assert!(distance_to(&nearest, (5.0, 5.0)) > 0.0);
     }
 
     #[test]

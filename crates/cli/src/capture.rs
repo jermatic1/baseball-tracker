@@ -263,10 +263,12 @@ pub(crate) mod server {
     }
 
     impl CaptureState {
-        fn has_clicked_fit(&self) -> bool {
+        /// A fit the user chose, by clicking corners or tapping the plate,
+        /// which the sampler leaves alone.
+        fn has_chosen_fit(&self) -> bool {
             self.last_fit
                 .as_ref()
-                .is_some_and(|f| f.source == FitSource::Clicked)
+                .is_some_and(|f| f.source != FitSource::Auto)
         }
     }
 
@@ -621,7 +623,11 @@ pub(crate) mod server {
                 RecordAction::Start => start_record(app),
                 RecordAction::Stop => stop_record(app).await,
             },
-            ClientMsg::Calibrate { action, corners } => match action {
+            ClientMsg::Calibrate {
+                action,
+                corners,
+                point,
+            } => match action {
                 CalibrateAction::Start => {
                     if let Ok(mut st) = app.state.lock() {
                         st.last_fit = None;
@@ -635,6 +641,7 @@ pub(crate) mod server {
                 }
                 CalibrateAction::Apply => apply_calibration(app),
                 CalibrateAction::Corners => clicked_calibration(app, corners).await,
+                CalibrateAction::Pick => picked_calibration(app, point).await,
             },
         }
     }
@@ -736,6 +743,24 @@ pub(crate) mod server {
         Ok(())
     }
 
+    /// Fit the plate the user tapped on the live frame and hold that fit.
+    async fn picked_calibration(app: &App, point: Option<[f64; 2]>) -> Result<(), String> {
+        let [x, y] = point.ok_or("point missing")?;
+        let frame = app.state.lock().map_err(|e| e.to_string())?.latest.clone();
+        let frame = frame.ok_or("no frame yet")?;
+        let cfg = app.hub.config();
+        let fit = tokio::task::spawn_blocking(move || {
+            tracker::plate::calibrate_at(&frame.left, frame.width, frame.height, &cfg, (x, y))
+                .map(|(corners, pose)| Fit::checked(corners, pose, FitSource::Picked, &frame))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no plate there; tap the white of the plate")?;
+        app.state.lock().map_err(|e| e.to_string())?.last_fit = Some(fit.clone());
+        app.hub.send(&calibration_msg(Some(&fit), false));
+        Ok(())
+    }
+
     fn calibration_msg(fit: Option<&Fit>, applied: bool) -> ServerMsg {
         let pts = |p: &[(f64, f64); 5]| p.iter().map(|&(x, y)| [x, y]).collect::<Vec<_>>();
         ServerMsg::Calibration {
@@ -804,11 +829,12 @@ pub(crate) mod server {
     }
 
     /// In calibration mode, fit the plate on the live frame a few times a
-    /// second and tell clients what it sees, until the user clicks corners.
+    /// second and tell clients what it sees, until the user picks a plate
+    /// or clicks corners.
     async fn calibration_sampler(app: App, stop: Arc<AtomicBool>) {
         while !stop.load(Ordering::Relaxed) {
             tokio::time::sleep(CALIBRATION_PERIOD).await;
-            if !app.hub.calibrating() || app.state.lock().is_ok_and(|st| st.has_clicked_fit()) {
+            if !app.hub.calibrating() || app.state.lock().is_ok_and(|st| st.has_chosen_fit()) {
                 continue;
             }
             let frame = app.state.lock().ok().and_then(|st| st.latest.clone());
@@ -822,7 +848,7 @@ pub(crate) mod server {
             .ok()
             .flatten();
             let Ok(mut st) = app.state.lock() else { break };
-            if st.has_clicked_fit() {
+            if st.has_chosen_fit() {
                 continue;
             }
             if fit.is_some() {
