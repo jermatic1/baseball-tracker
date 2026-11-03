@@ -1,0 +1,46 @@
+# Build the Android app whenever it changes and attach the APK to the
+# "latest" release, signed with the keystore in the repository secrets so
+# each build installs over the last.
+name: android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/android/**
+      - .github/workflows/android.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Build
+        working-directory: apps/android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          export ANDROID_KEYSTORE="$RUNNER_TEMP/tracker.jks"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$ANDROID_KEYSTORE"
+          ./gradlew --quiet assembleRelease
+          mkdir -p ../../dist
+          cp app/build/outputs/apk/release/app-release.apk ../../dist/tracker.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracker-android
+          path: dist/tracker.apk
+      - name: Attach to the latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          files: dist/tracker.apk

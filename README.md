@@ -32,6 +32,10 @@ This installs the GPU libraries, the camera udev rule, and the latest release in
 
 See [docker/tracker](docker/tracker/README.md) for the tracker and [docker/train](docker/train/README.md) for the training server.
 
+### Android
+
+Install `tracker.apk` from the latest release on the GitHub project. It opens the tracker's pages full screen, finds the tracker on the Wi-Fi or asks for its address, and keeps the screen on.
+
 ### From source
 
 ```bash

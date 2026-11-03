@@ -53,6 +53,18 @@ tasks:
     sources: [package.json, vite.config.ts, tsconfig.json, src/**/*]
     generates: [build/index.html]
 
+  android:
+    desc: Build the Android app that opens the tracker's pages (needs ANDROID_HOME and a JDK); CI signs and attaches it to the latest release
+    dir: apps/android
+    sources:
+      - app/build.gradle.kts
+      - app/src/**/*
+      - "*.gradle.kts"
+    generates:
+      - app/build/outputs/apk/release/app-release.apk
+    cmds:
+      - ./gradlew --quiet assembleRelease
+
   web-dev:
     desc: Serve the web app with hot reload, proxying to a tracker on port 7880 (task mock or task run)
     deps: [web-deps]
