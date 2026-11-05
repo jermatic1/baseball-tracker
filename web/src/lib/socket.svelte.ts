@@ -26,6 +26,8 @@ export interface Status {
 	ir_flood: number;
 	ir_dot: number;
 	mount: { distance: number; height: number; lateral: number };
+	/** The strike zone at the front of the plate, in frame pixels. */
+	zone?: number[][] | null;
 	camera?: {
 		left_rate: number;
 		right_rate: number;
@@ -42,9 +44,16 @@ export interface Status {
 		drops: number;
 		clips: number;
 		last_event?: string;
-		boxes: number[][];
+		balls: LiveBall[];
 	};
 	model?: ModelStatus;
+}
+
+/** A ball in view: its box in frame pixels and, with depth, inches across the
+ * plate, above the ground, and in front of the plate's front edge. */
+export interface LiveBall {
+	rect: number[];
+	position?: number[] | null;
 }
 
 export interface Location {

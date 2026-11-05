@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { live, on, send, type Message, type Status } from '#lib/socket.svelte.ts';
+	import { live, on, send, type LiveBall, type Message, type Status } from '#lib/socket.svelte.ts';
 	import Stepper from '#lib/components/Stepper.svelte';
 
 	let img: HTMLImageElement;
@@ -36,6 +36,9 @@
 	let canApply = $state(false);
 	let hasDots = $state(false);
 	let dotCount = $state(0);
+	// Where the first ball in view with depth sits, to check the mount
+	// against a ball placed by hand.
+	let ballPosition = $state<number[] | null>(null);
 
 	// Each stepper's setting, label, step, and how to show its value.
 	const steppers: [keyof typeof controls, string, number, (v: number) => string][] = [
@@ -80,7 +83,9 @@
 
 	function status(m: Status) {
 		controls = { exposure: m.exposure, gain: m.gain, ir_flood: m.ir_flood, ir_dot: m.ir_dot };
-		drawBoxes(m.detector ? m.detector.boxes : []);
+		const balls = m.detector ? m.detector.balls : [];
+		drawBoxes(balls, m.calibrating ? null : m.zone);
+		ballPosition = balls.find((b) => b.position)?.position ?? null;
 		setCalibrating(m.calibrating);
 		if (!m.calibrating) mount = m.mount;
 	}
@@ -106,12 +111,22 @@
 		canvas.style.height = img.clientHeight + 'px';
 		return canvas.getContext('2d')!;
 	}
-	function drawBoxes(list: number[][]) {
+	function poly(ctx: CanvasRenderingContext2D, pts: number[][] | null | undefined, color: string, closed: boolean) {
+		if (!pts || pts.length < 2) return;
+		ctx.strokeStyle = color;
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+		if (closed) ctx.closePath();
+		ctx.stroke();
+	}
+	function drawBoxes(list: LiveBall[], zone: number[][] | null | undefined) {
 		const ctx = fit(boxes);
 		ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+		poly(ctx, zone, '#0ff', true);
 		ctx.strokeStyle = '#f80';
 		ctx.lineWidth = 2;
-		list.forEach((b) => ctx.strokeRect(b[0], b[1], b[2], b[3]));
+		list.forEach(({ rect: b }) => ctx.strokeRect(b[0], b[1], b[2], b[3]));
 	}
 	function showCalibration() {
 		const m = shown && shown.found ? shown : null;
@@ -127,17 +142,11 @@
 		const ctx = fit(overlay);
 		ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 		if (!calibrating) return;
-		const poly = (pts: number[][], color: string, closed: boolean) => {
-			if (!pts || pts.length < 2) return;
-			ctx.strokeStyle = color;
-			ctx.lineWidth = 2;
-			ctx.beginPath();
-			pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
-			if (closed) ctx.closePath();
-			ctx.stroke();
-		};
-		if (m) poly(m.reprojected, '#ff0', true);
-		poly(dots, '#0f0', dots.length === 5);
+		if (m) {
+			poly(ctx, m.reprojected, '#ff0', true);
+			poly(ctx, m.zone, '#0ff', true);
+		}
+		poly(ctx, dots, '#0f0', dots.length === 5);
 		ctx.font = 'bold 12px sans-serif';
 		ctx.textAlign = 'center';
 		ctx.textBaseline = 'middle';
@@ -332,6 +341,15 @@
 					</dl>
 				{:else if !calibrating}
 					<p class="opacity-70">Not calibrated.</p>
+				{/if}
+				{#if !calibrating && ballPosition}
+					<div class="caption mt-2">Ball in view</div>
+					<dl class="grid grid-cols-3 gap-2">
+						<div class="fact"><dt class="caption">Side</dt><dd>{ballPosition[0].toFixed(1)} in</dd></div>
+						<div class="fact"><dt class="caption">Height</dt><dd>{ballPosition[1].toFixed(1)} in</dd></div>
+						<div class="fact"><dt class="caption">Ahead of plate</dt><dd>{ballPosition[2].toFixed(1)} in</dd></div>
+					</dl>
+					<p class="opacity-70">Set a ball on a tee at a measured spot to check the mount. The cyan box is the strike zone at the front of the plate.</p>
 				{/if}
 				{#if calibrating}
 					<div class="mt-2 grid grid-cols-2 gap-2">

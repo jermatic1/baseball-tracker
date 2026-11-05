@@ -181,6 +181,7 @@ pub(crate) mod server {
     use tokio::sync::watch;
     use tracker::geom::Intrinsics;
     use tracker::plate::{check_fit, solve_pose, window_depth_m, PlateCorners, PoseFit};
+    use tracker::{zone_outline, Config, ZoneConfig};
 
     use crate::convert::to_stored;
     use crate::hub::{Hub, Outbound};
@@ -216,6 +217,7 @@ pub(crate) mod server {
         pose: PoseFit,
         source: FitSource,
         warnings: Vec<String>,
+        zone: Option<Vec<[f64; 2]>>,
     }
 
     impl Fit {
@@ -224,8 +226,10 @@ pub(crate) mod server {
             pose: PoseFit,
             source: FitSource,
             frame: &tracker::StoredFrame,
+            zone: &ZoneConfig,
         ) -> Self {
             let intr = Intrinsics::from_fov(frame.width, frame.height, 80.0, 55.0);
+            let zone = zone_outline(zone, &intr, &pose.mount);
             let depth = |px| window_depth_m(&frame.depth_mm, frame.width, frame.height, px);
             let has_depth = !frame.depth_mm.is_empty();
             let warnings = check_fit(
@@ -239,8 +243,15 @@ pub(crate) mod server {
                 pose,
                 source,
                 warnings,
+                zone,
             }
         }
+    }
+
+    /// The strike zone in frame pixels for the mount the config holds.
+    fn applied_zone(cfg: &Config) -> Option<Vec<[f64; 2]>> {
+        let intr = Intrinsics::from_fov(cfg.capture.width, cfg.capture.height, 80.0, 55.0);
+        zone_outline(&cfg.zone, &intr, &cfg.mount)
     }
 
     struct CaptureState {
@@ -729,11 +740,11 @@ pub(crate) mod server {
         };
         let frame = app.state.lock().map_err(|e| e.to_string())?.latest.clone();
         let frame = frame.ok_or("no frame yet")?;
-        let seed = app.hub.config().mount;
+        let cfg = app.hub.config();
         let fit = tokio::task::spawn_blocking(move || {
             let intr = Intrinsics::from_fov(frame.width, frame.height, 80.0, 55.0);
-            solve_pose(&corners, &intr, &seed)
-                .map(|pose| Fit::checked(corners, pose, FitSource::Clicked, &frame))
+            solve_pose(&corners, &intr, &cfg.mount)
+                .map(|pose| Fit::checked(corners, pose, FitSource::Clicked, &frame, &cfg.zone))
         })
         .await
         .map_err(|e| e.to_string())?
@@ -750,8 +761,9 @@ pub(crate) mod server {
         let frame = frame.ok_or("no frame yet")?;
         let cfg = app.hub.config();
         let fit = tokio::task::spawn_blocking(move || {
-            tracker::plate::calibrate_at(&frame.left, frame.width, frame.height, &cfg, (x, y))
-                .map(|(corners, pose)| Fit::checked(corners, pose, FitSource::Picked, &frame))
+            tracker::plate::calibrate_at(&frame.left, frame.width, frame.height, &cfg, (x, y)).map(
+                |(corners, pose)| Fit::checked(corners, pose, FitSource::Picked, &frame, &cfg.zone),
+            )
         })
         .await
         .map_err(|e| e.to_string())?
@@ -769,6 +781,7 @@ pub(crate) mod server {
             reprojected: fit.map(|f| pts(&f.pose.reprojected)),
             rms: fit.map(|f| f.pose.rms_px),
             mount: fit.map(|f| f.pose.mount.clone()),
+            zone: fit.and_then(|f| f.zone.clone()),
             applied,
             source: fit.map_or(FitSource::Auto, |f| f.source),
             warnings: fit.map(|f| f.warnings.clone()).unwrap_or_default(),
@@ -797,6 +810,7 @@ pub(crate) mod server {
                 gain: st.gain,
                 ir_flood: st.ir_flood,
                 ir_dot: st.ir_dot,
+                zone: applied_zone(&app.hub.config()),
                 mount: app.hub.mount(),
                 model: app.hub.model_status(),
             };
@@ -842,7 +856,9 @@ pub(crate) mod server {
             let cfg = app.hub.config();
             let fit = tokio::task::spawn_blocking(move || {
                 tracker::plate::calibrate_from_frame(&frame.left, frame.width, frame.height, &cfg)
-                    .map(|(corners, pose)| Fit::checked(corners, pose, FitSource::Auto, &frame))
+                    .map(|(corners, pose)| {
+                        Fit::checked(corners, pose, FitSource::Auto, &frame, &cfg.zone)
+                    })
             })
             .await
             .ok()

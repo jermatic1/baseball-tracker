@@ -244,6 +244,35 @@ fn pitch_plate(
     })
 }
 
+/// The strike zone's corners at the front of the plate in frame pixels,
+/// for drawing over the camera view, or none while any corner is behind
+/// the camera.
+pub fn zone_outline(
+    zone: &ZoneConfig,
+    intr: &Intrinsics,
+    mount: &MountConfig,
+) -> Option<Vec<[f64; 2]>> {
+    let half = metres(zone.width / 24.0);
+    let bottom = metres(zone.bottom / 12.0);
+    let top = metres(zone.top / 12.0);
+    [[-half, bottom], [half, bottom], [half, top], [-half, top]]
+        .into_iter()
+        .map(|[x, y]| {
+            let (u, v, depth) = geom::project([x, y, PLATE_FRONT_M], intr, mount)?;
+            (depth > 0.0).then_some([u, v])
+        })
+        .collect()
+}
+
+/// Where a detected ball sits in inches: across the plate, above the
+/// ground, and in front of the plate's front edge toward the pitcher.
+pub fn ball_position(ball: &BallBox, intr: &Intrinsics, mount: &MountConfig) -> Option<[f64; 3]> {
+    let depth = ball.depth_m?;
+    let (cx, cy) = ball.centroid();
+    let [x, y, z] = unproject(cx, cy, depth, intr, mount);
+    Some([inches(x), inches(y), inches(PLATE_FRONT_M - z)])
+}
+
 fn speed(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
@@ -886,6 +915,29 @@ mod tests {
         assert_eq!(eps[0].last(), 110);
         assert_eq!(eps[1].first(), 61, "pre-roll survives the cut");
         assert_eq!(eps[1].last(), 211);
+    }
+
+    #[test]
+    fn zone_outline_sits_upright_in_the_example_frame() {
+        let cfg = Config::example();
+        let intr = Intrinsics::from_fov(cfg.capture.width, cfg.capture.height, 80.0, 55.0);
+        let px = zone_outline(&cfg.zone, &intr, &cfg.mount).expect("in view");
+        assert_eq!(px.len(), 4);
+        for [u, v] in &px {
+            assert!(*u >= 0.0 && *u <= intr.width as f64, "{px:?}");
+            assert!(*v >= 0.0 && *v <= intr.height as f64, "{px:?}");
+        }
+        assert!(px[2][1] < px[1][1], "top corners are higher: {px:?}");
+        assert!(px[3][1] < px[0][1], "top corners are higher: {px:?}");
+        let ball = BallBox {
+            x: 300.0,
+            y: 200.0,
+            w: 10.0,
+            h: 10.0,
+            conf: 1.0,
+            depth_m: None,
+        };
+        assert!(ball_position(&ball, &intr, &cfg.mount).is_none());
     }
 
     #[test]

@@ -139,6 +139,8 @@ pub enum ServerMsg {
         reprojected: Option<Vec<[f64; 2]>>,
         rms: Option<f64>,
         mount: Option<MountConfig>,
+        /// The strike zone the fit would give, in frame pixels.
+        zone: Option<Vec<[f64; 2]>>,
         applied: bool,
         source: FitSource,
         warnings: Vec<String>,
@@ -223,6 +225,9 @@ pub struct Status {
     pub ir_flood: f32,
     pub ir_dot: f32,
     pub mount: MountConfig,
+    /// The strike zone at the front of the plate in frame pixels, from the
+    /// applied mount; none before calibration puts it in view.
+    pub zone: Option<Vec<[f64; 2]>>,
     pub model: ModelStatus,
 }
 
@@ -280,7 +285,16 @@ pub struct LiveStatus {
     pub drops: u64,
     pub clips: u64,
     pub last_event: String,
-    pub boxes: Vec<[f64; 4]>,
+    pub balls: Vec<LiveBall>,
+}
+
+/// A ball the detector sees now: its box in frame pixels and, with stereo
+/// depth, where it sits in inches: across the plate, above the ground, and
+/// in front of the plate's front edge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveBall {
+    pub rect: [f64; 4],
+    pub position: Option<[f64; 3]>,
 }
 
 #[cfg(test)]
@@ -413,6 +427,7 @@ mod tests {
             ir_flood: 0.0,
             ir_dot: 0.0,
             mount: mount.clone(),
+            zone: Some(vec![[1.0, 2.0]; 4]),
             model: ModelStatus {
                 file: "detector.onnx".into(),
                 sha1: "abc1234".into(),
@@ -428,6 +443,7 @@ mod tests {
             reprojected: None,
             rms: Some(0.4),
             mount: Some(mount),
+            zone: None,
             applied: false,
             source: FitSource::Clicked,
             warnings: vec!["plate is too small in the frame".into()],

@@ -60,7 +60,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 Everything lives in a data directory, `data` by default.
 
 1. **Run.** `task run` serves the pages on port 7880.
-2. **Calibrate** once per camera placement: with the plate clear, press Calibrate on the setup page.
+2. **Calibrate** once per camera placement: with the plate clear, press Calibrate on the setup page. To check it, set a ball on a tee at a measured spot; the setup page shows where the tracker puts it and draws the strike zone over the camera view.
 3. **Hit.** Add a user, start a session on the tracker page, and hit. Every moving ball is measured, sent to connected simulators, and saved as a clip.
 4. **Review.** The sessions page lists every session with playback of its clips.
 5. **Train** when there is no detector yet, or it misses balls or fires on something else. With no detector, Record on the tracker page saves clips to label by clicking the ball. Label a session, mark it to include, and press Train. Promote the result when it scores better.

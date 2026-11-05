@@ -20,15 +20,15 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracker::{
-    process_clip, Activity, ClipMeta, ClipWriter, DataDir, Detections, Episode, Intrinsics,
-    Rectifier, StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
+    ball_position, process_clip, Activity, ClipMeta, ClipWriter, DataDir, Detections, Episode,
+    Intrinsics, Rectifier, StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
 };
 
 use crate::capture::server::{self, LiveTap};
 use crate::convert::print_hit;
 use crate::detector::{Detector, FrameView};
 use crate::hub::Hub;
-use crate::protocol::LiveStatus;
+use crate::protocol::{LiveBall, LiveStatus};
 use crate::standby::{Engine, OnDemand, Open};
 
 /// Frames queued for the detector before the newest are dropped: about
@@ -315,6 +315,7 @@ fn detect_loop(
     } = shared;
     let cfg: WatchConfig = session.config.watch.clone();
     let c = session.config.capture.clone();
+    let intr = Intrinsics::from_fov(c.width, c.height, 80.0, 55.0);
     let mut engine: Option<Running> = None;
     // The stereo geometry while the camera is up, so a model promoted
     // before any exists can start detecting at once.
@@ -334,7 +335,7 @@ fn detect_loop(
         }
     };
     let mut report =
-        |watcher: &Watcher, boxes: Vec<[f64; 4]>, taken: u64, meter: &mut (Instant, u32)| {
+        |watcher: &Watcher, balls: Vec<LiveBall>, taken: u64, meter: &mut (Instant, u32)| {
             if last_status.elapsed() < Duration::from_millis(200) {
                 return;
             }
@@ -346,7 +347,7 @@ fn detect_loop(
                     WatchState::Idle => "idle".into(),
                     WatchState::Episode => "episode".into(),
                 };
-                s.boxes = boxes.clone();
+                s.balls = balls.clone();
             });
             if dt >= 1.0 {
                 *meter = (Instant::now(), 0);
@@ -452,7 +453,14 @@ fn detect_loop(
             }
         };
         let calib = running.calib;
-        let boxes: Vec<[f64; 4]> = balls.iter().map(|b| [b.x, b.y, b.w, b.h]).collect();
+        let mount = hub.mount();
+        let live: Vec<LiveBall> = balls
+            .iter()
+            .map(|b| LiveBall {
+                rect: [b.x, b.y, b.w, b.h],
+                position: ball_position(b, &intr, &mount),
+            })
+            .collect();
         let was_open = watcher.state() == WatchState::Episode;
         let episode = watcher.observe(index, frame.t_ns, balls);
         if !was_open && watcher.state() == WatchState::Episode {
@@ -495,7 +503,7 @@ fn detect_loop(
         }
         index += 1;
         meter.1 += 1;
-        report(&watcher, boxes, taken, &mut meter);
+        report(&watcher, live, taken, &mut meter);
     }
     if let Some(episode) = watcher.flush() {
         let target = target.take().unwrap_or_else(|| Target::now(&hub));
