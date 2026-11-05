@@ -6,6 +6,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::store::Activity;
 use crate::TrackerError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,6 +101,20 @@ impl Default for PitchingConfig {
         Self {
             actual_distance: 46.0,
             simulated_distance: 46.0,
+        }
+    }
+}
+
+impl PitchingConfig {
+    /// A batter swings at where the ball really crosses, so hitting is
+    /// judged there; pitching and anything unknown project to the mound.
+    pub fn for_activity(&self, activity: Option<Activity>) -> Self {
+        match activity {
+            Some(Activity::Hitting) => Self {
+                actual_distance: self.actual_distance,
+                simulated_distance: self.actual_distance,
+            },
+            _ => self.clone(),
         }
     }
 }

@@ -57,7 +57,8 @@ simulated_distance = 46
 altitude = 0
 
 # The strike zone, inches: centred on the plate, width across, bottom to top
-# above the ground. Pitches are called on their simulated crossing.
+# above the ground. Pitches are called on their simulated crossing; in a
+# hitting session, where they really cross.
 [zone]
 width = 17
 bottom = 18

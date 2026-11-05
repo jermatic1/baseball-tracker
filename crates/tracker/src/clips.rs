@@ -706,7 +706,7 @@ pub fn write_synth(dir: &Path) -> Result<crate::geom::HitEstimate, TrackerError>
     let id = session.save_clip(&frames, 1000, 100)?;
     let dets = Detections { frames: det_frames };
     session.save_detections(&id, &dets)?;
-    let rec = process_clip(&id, &dets.frames, &session.config, &intr)
+    let rec = process_clip(&id, &dets.frames, &session.config, &intr, None)
         .into_iter()
         .find(|r| r.kind == EventKind::Hit)
         .ok_or_else(|| TrackerError::Other("synth clip did not produce a hit".into()))?;

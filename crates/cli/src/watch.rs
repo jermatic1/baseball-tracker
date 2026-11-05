@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracker::{
-    process_clip, ClipMeta, ClipWriter, DataDir, Detections, Episode, Intrinsics, Rectifier,
-    StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
+    process_clip, Activity, ClipMeta, ClipWriter, DataDir, Detections, Episode, Intrinsics,
+    Rectifier, StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
 };
 
 use crate::capture::server::{self, LiveTap};
@@ -42,12 +42,17 @@ const ENGINE_POLL: Duration = Duration::from_millis(200);
 struct Target {
     dir: DataDir,
     session: Option<i64>,
+    activity: Option<Activity>,
 }
 
 impl Target {
     fn now(hub: &Hub) -> Self {
         let (dir, session) = hub.target();
-        Self { dir, session }
+        Self {
+            dir,
+            session,
+            activity: hub.activity(),
+        }
     }
 }
 
@@ -568,7 +573,7 @@ async fn coordinate(
         )
         .map_err(|e| e.to_string())?;
         let cfg = hub.config();
-        let records = process_clip(&id, &frames, &cfg, &intr);
+        let records = process_clip(&id, &frames, &cfg, &intr, target.activity);
         let summary = if records.is_empty() {
             format!("{id}: ball moved, no event")
         } else {

@@ -32,7 +32,7 @@ impl Activity {
         }
     }
 
-    fn parse(s: &str) -> Result<Self, TrackerError> {
+    pub fn parse(s: &str) -> Result<Self, TrackerError> {
         match s {
             "hitting" => Ok(Activity::Hitting),
             "pitching" => Ok(Activity::Pitching),

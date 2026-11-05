@@ -61,13 +61,17 @@ pub enum TrackerError {
     Other(String),
 }
 
-/// Every moving-ball event in a clip, fitted as a trajectory.
+/// Every moving-ball event in a clip, fitted as a trajectory. `activity`
+/// is the session's, which decides whether pitches are projected to the
+/// mound distance before they are called.
 pub fn process_clip(
     clip_id: &str,
     frames: &[DetFrame],
     cfg: &Config,
     intr: &Intrinsics,
+    activity: Option<Activity>,
 ) -> Vec<HitRecord> {
+    let pitching = cfg.pitching.for_activity(activity);
     let params = MotionParams::default();
     let default_depth = metres(cfg.mount.distance);
     let tracks = track_balls(frames, tracker_config(intr.fx, default_depth, &params));
@@ -143,7 +147,7 @@ pub fn process_clip(
             .map(|s| contact_at(&traj, s.t_ns));
         let hit = (kind == EventKind::Hit).then(|| flight::predict(traj.p0, traj.v, air));
         let pitch = (kind == EventKind::Pitch)
-            .then(|| pitch_plate(&traj, &cfg.pitching, &cfg.zone, air))
+            .then(|| pitch_plate(&traj, &pitching, &cfg.zone, air))
             .flatten();
         out.push(HitRecord {
             clip: clip_id.to_string(),
@@ -300,7 +304,16 @@ pub fn clip_hits(session: &DataDir, id: &str) -> Result<Vec<HitRecord>, TrackerE
     let dets = session.load_detections(id)?;
     let clip = session.load_clip(id)?;
     let intr = Intrinsics::from_fov(clip.meta.width, clip.meta.height, 80.0, 55.0);
-    Ok(process_clip(id, &dets.frames, &session.config, &intr))
+    let activity = SessionMeta::load(&session.dir)?
+        .activity
+        .and_then(|a| Activity::parse(&a).ok());
+    Ok(process_clip(
+        id,
+        &dets.frames,
+        &session.config,
+        &intr,
+        activity,
+    ))
 }
 
 /// Replace a clip's records in the session's list, keeping the rest.
@@ -454,7 +467,7 @@ mod tests {
         }
 
         fn records(&self) -> Vec<HitRecord> {
-            process_clip("0001", &self.frames, &self.cfg, &self.intr)
+            process_clip("0001", &self.frames, &self.cfg, &self.intr, None)
         }
     }
 
@@ -823,7 +836,7 @@ mod tests {
         let ep = &eps[0];
         assert_eq!(ep.first(), 80, "half a second of pre-roll before frame 130");
         assert_eq!(ep.last(), 154, "settles 0.15 s after the last flight frame");
-        let live = process_clip("0001", &ep.frames, &s.cfg, &s.intr);
+        let live = process_clip("0001", &ep.frames, &s.cfg, &s.intr, None);
         let batch = s.records();
         assert_eq!(live.len(), 1, "{live:?}");
         assert_eq!(batch.len(), 1);
@@ -834,7 +847,7 @@ mod tests {
         assert_eq!(live[0].frame_start, batch[0].frame_start);
         let clip = ep.as_clip();
         assert_eq!(clip[0].index, 0);
-        let saved = process_clip("0002", &clip, &s.cfg, &s.intr);
+        let saved = process_clip("0002", &clip, &s.cfg, &s.intr, None);
         assert_eq!(saved[0].frame_start, batch[0].frame_start - 80);
     }
 
@@ -846,7 +859,7 @@ mod tests {
         let eps = feed(&s, WatchConfig::default());
         assert_eq!(eps.len(), 1, "{eps:?}");
         assert_eq!(eps[0].first(), 0);
-        let live = process_clip("0001", &eps[0].frames, &s.cfg, &s.intr);
+        let live = process_clip("0001", &eps[0].frames, &s.cfg, &s.intr, None);
         assert_eq!(live.len(), 1, "{live:?}");
         assert_eq!(live[0].kind, EventKind::Pitch);
     }
@@ -895,6 +908,17 @@ mod tests {
         assert!(p.plate_velocity < mph(20.0) && p.plate_velocity > mph(20.0) - 3.0);
         let same = pitch_plate(&traj, &PitchingConfig::default(), &zone, air).unwrap();
         assert_eq!(same.location, same.simulated_location);
+        let hitting = pitch_plate(
+            &traj,
+            &cfg.for_activity(Some(Activity::Hitting)),
+            &zone,
+            air,
+        )
+        .unwrap();
+        assert_eq!(hitting.location, hitting.simulated_location);
+        assert_eq!(hitting.location, p.location);
+        let pitching = cfg.for_activity(Some(Activity::Pitching));
+        assert_eq!(pitching, cfg);
         let away = Trajectory {
             v: [0.0, 0.5, -20.0],
             ..traj
