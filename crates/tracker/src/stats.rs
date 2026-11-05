@@ -166,6 +166,7 @@ mod tests {
         let mut e = event(EventKind::Pitch, speed);
         e.pitch = Some(PitchPlate {
             release_velocity: speed,
+            release_height: None,
             plate_velocity: speed - 2.0,
             location: Location {
                 side: 0.0,

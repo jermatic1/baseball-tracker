@@ -150,6 +150,7 @@ pub fn mock_pitch(rng: &mut Rng, cfg: &Config, clip: &str) -> HitRecord {
         launch_angle: rng.between(-3.0, 3.0),
         pitch: Some(PitchPlate {
             release_velocity: speed,
+            release_height: Some(rng.between(56.0, 64.0)),
             plate_velocity,
             location,
             simulated_location,

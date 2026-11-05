@@ -1,3 +1,4 @@
+pub mod aim;
 pub mod clips;
 pub mod config;
 pub mod dataset;
@@ -195,7 +196,7 @@ fn contact_at(traj: &Trajectory, t_ns: u64) -> Contact {
 }
 
 /// Front edge of the plate, where pitch location is read.
-const PLATE_FRONT_M: f64 = -17.0 * 0.0254;
+pub(crate) const PLATE_FRONT_M: f64 = -17.0 * 0.0254;
 /// Slowest approach toward the plate that counts as a pitch crossing it.
 const MIN_APPROACH_MPS: f64 = 1.0;
 
@@ -214,7 +215,7 @@ fn pitch_plate(
         return None;
     }
     let release_z = (-metres(cfg.actual_distance)).min(traj.p0[2]);
-    let (_, release_v) = flight::at_depth(traj.p0, traj.v, release_z, air)?;
+    let ([_, release_y, _], release_v) = flight::at_depth(traj.p0, traj.v, release_z, air)?;
     let ([x, y, _], plate_v) = flight::at_depth(traj.p0, traj.v, PLATE_FRONT_M, air)?;
     if y <= 0.0 {
         return None;
@@ -233,6 +234,7 @@ fn pitch_plate(
     };
     Some(PitchPlate {
         release_velocity: mph(speed(release_v)),
+        release_height: Some(inches(release_y)),
         plate_velocity: mph(speed(plate_v)),
         location: Location {
             side: inches(x),
@@ -950,6 +952,7 @@ mod tests {
         let cfg = PitchingConfig {
             actual_distance: 30.0,
             simulated_distance: 46.0,
+            target_behind: 0.0,
         };
         let zone = ZoneConfig::default();
         let air = flight::air_density(0.0);
@@ -1003,6 +1006,7 @@ mod tests {
         let close = PitchingConfig {
             actual_distance: 30.0,
             simulated_distance: 46.0,
+            target_behind: 0.0,
         };
         let low = Trajectory {
             p0: [0.0, 0.95, -8.0],
@@ -1040,6 +1044,7 @@ mod tests {
         let near = PitchingConfig {
             actual_distance: 15.0,
             simulated_distance: 46.0,
+            target_behind: 0.0,
         };
         let p = pitch_plate(&seen, &near, &zone, air).unwrap();
         assert!(

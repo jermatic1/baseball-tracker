@@ -88,12 +88,15 @@ impl Default for StereoConfig {
     }
 }
 
-/// Where the pitcher actually throws from, and the mound distance each
-/// pitch's plate location is projected to.
+/// Where the pitcher actually throws from, the mound distance each pitch's
+/// plate location is projected to, and how far behind the front of the
+/// plate their target hangs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PitchingConfig {
     pub actual_distance: f64,
     pub simulated_distance: f64,
+    pub target_behind: f64,
 }
 
 impl Default for PitchingConfig {
@@ -101,6 +104,7 @@ impl Default for PitchingConfig {
         Self {
             actual_distance: 46.0,
             simulated_distance: 46.0,
+            target_behind: 0.0,
         }
     }
 }
@@ -111,8 +115,8 @@ impl PitchingConfig {
     pub fn for_activity(&self, activity: Option<Activity>) -> Self {
         match activity {
             Some(Activity::Hitting) => Self {
-                actual_distance: self.actual_distance,
                 simulated_distance: self.actual_distance,
+                ..self.clone()
             },
             _ => self.clone(),
         }

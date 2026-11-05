@@ -10,7 +10,8 @@
 		simulated_location: Location;
 		call: string;
 	}
-	let { zone, pitches }: { zone: Zone; pitches: Pitch[] } = $props();
+	// `aim` marks a point to throw at with a cross.
+	let { zone, pitches, aim = null }: { zone: Zone; pitches: Pitch[]; aim?: Location | null } = $props();
 
 	// Inches across and up, drawn with the ground at the bottom.
 	const half = 24;
@@ -33,6 +34,10 @@
 		class="fill-base-content/5 stroke-base-content/70"
 		stroke-width="0.6"
 	/>
+	{#if aim}
+		<line x1={x(aim.side) - 2} y1={y(aim.height)} x2={x(aim.side) + 2} y2={y(aim.height)} class="stroke-warning" stroke-width="0.6" />
+		<line x1={x(aim.side)} y1={y(aim.height) - 2} x2={x(aim.side)} y2={y(aim.height) + 2} class="stroke-warning" stroke-width="0.6" />
+	{/if}
 	{#each [...pitches].reverse() as p, k (k)}
 		{@const old = p !== latest}
 		{#if !same(p)}

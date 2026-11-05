@@ -141,6 +141,10 @@ pub enum Call {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PitchPlate {
     pub release_velocity: f64,
+    /// Inches above the ground at release, absent on records from before
+    /// it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_height: Option<f64>,
     pub plate_velocity: f64,
     pub location: Location,
     pub simulated_location: Location,

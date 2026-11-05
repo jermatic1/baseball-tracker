@@ -546,6 +546,7 @@ mod tests {
             hit: None,
             pitch: Some(PitchPlate {
                 release_velocity: velocity,
+                release_height: None,
                 plate_velocity: velocity - 2.0,
                 location,
                 simulated_location: location,

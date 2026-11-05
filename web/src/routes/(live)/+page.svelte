@@ -2,11 +2,12 @@
 	import { live, send, userName, type HitRecord } from '#lib/socket.svelte.ts';
 	import { getJson } from '#lib/api.ts';
 	import { num, sentence, when, type SummaryLine } from '#lib/format.ts';
-	import type { Location } from '#lib/socket.svelte.ts';
+	import type { Location, Zone } from '#lib/socket.svelte.ts';
 	import Stat from '#lib/components/Stat.svelte';
 	import Segmented from '#lib/components/Segmented.svelte';
 	import Empty from '#lib/components/Empty.svelte';
 	import ZonePlot from '#lib/components/ZonePlot.svelte';
+	import Stepper from '#lib/components/Stepper.svelte';
 
 	interface History {
 		sessions: {
@@ -56,6 +57,27 @@
 
 	// The pitches shown, newest first, and the zone the latest was judged by.
 	let pitches = $derived(live.events.flatMap((e) => (e.record.pitch ? [e.record.pitch] : [])));
+
+	// The aim tool for pitching from closer than the simulated mound: where
+	// to throw at the target, for a release speed, from the tracker.
+	interface Aim {
+		measured_from: number;
+		actual_distance: number;
+		simulated_distance: number;
+		aim: { release_height: number; target_behind: number; height: number; zone: Zone } | null;
+	}
+	let aimSpeed = $state(45);
+	let aim = $state<Aim | null>(null);
+	let pitching = $derived(live.session ? live.session.activity === 'pitching' : activity === 'pitching');
+	let pitcher = $derived(live.session ? live.session.user : user);
+	$effect(() => {
+		if (!pitching || !pitcher) return;
+		void live.events.length;
+		getJson<Aim>(`/api/aim?speed=${aimSpeed}&user=${pitcher}`)
+			.then((a) => (aim = a))
+			.catch(() => (aim = null));
+	});
+	let closer = $derived(!!aim && aim.actual_distance < aim.simulated_distance);
 
 	// Status as badges: capture, detector, clips, and the model.
 	let chips = $derived.by((): [string, string][] => {
@@ -195,6 +217,35 @@
 			<div class="min-w-0 flex-1 text-sm">
 				<div class="caption mb-1">Strike zone</div>
 				<p class="opacity-70">From behind the plate. Hollow is where the ball crossed the plate; filled is the same throw from the simulated distance, green for a strike and red for a ball.</p>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if pitching && closer && aim}
+	<div class="card surface mt-4">
+		<div class="card-body gap-4 p-3 sm:flex-row sm:items-start sm:p-4">
+			{#if aim.aim}
+				<div class="mx-auto w-48 shrink-0 sm:mx-0"><ZonePlot zone={aim.aim.zone} pitches={[]} aim={{ side: 0, height: aim.aim.height }} /></div>
+			{/if}
+			<div class="min-w-0 flex-1">
+				<div class="caption mb-1">Aim</div>
+				{#if aim.aim}
+					{@const z = aim.aim.zone}
+					<div class="flex items-baseline gap-2">
+						<span class="text-2xl font-semibold tabular-nums">{aim.aim.height.toFixed(0)}</span>
+						<span class="text-sm opacity-70">in high at the target, {aim.aim.target_behind} ft behind the plate</span>
+					</div>
+					<p class="mt-1 text-sm opacity-70">
+						The zone there is a box {z.width.toFixed(0)} in wide from {z.bottom.toFixed(0)} to {z.top.toFixed(0)} in up, centred on the plate.
+						Release {aim.aim.release_height.toFixed(0)} in high, {aim.measured_from ? `measured from ${aim.measured_from} pitches` : 'assumed until pitches are measured'}.
+					</p>
+				{:else}
+					<p class="text-sm opacity-70">No aim point: the target hangs past the simulated plate or the throw cannot reach the zone.</p>
+				{/if}
+				<div class="mt-3 max-w-xs">
+					<Stepper label="Release speed" value={`${aimSpeed} mph`} step="1 mph" onstep={(d) => (aimSpeed += d)} />
+				</div>
 			</div>
 		</div>
 	</div>

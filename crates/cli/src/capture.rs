@@ -345,6 +345,7 @@ pub(crate) mod server {
             .with_state(app.clone())
             .merge(crate::sessions::router(root, Arc::clone(&app.hub), model))
             .merge(crate::users::router(Arc::clone(&app.hub)))
+            .merge(crate::aim::router(Arc::clone(&app.hub)))
             .merge(trainer)
             .fallback(crate::web::serve);
         let listener = tokio::net::TcpListener::bind(bind)

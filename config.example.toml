@@ -47,10 +47,13 @@ max_episode = 6.0
 keep_clips = true
 
 # Where the pitcher actually throws from, which release speed is read at,
-# and the mound distance each pitch's plate location is projected to.
+# the mound distance each pitch's plate location is projected to, and how
+# far behind the front of the plate the pitcher's target hangs, which the
+# tracker page's aim tool places the aim point on.
 [pitching]
 actual_distance = 46
 simulated_distance = 46
+target_behind = 0
 
 [flight]
 # Thinner air carries farther.

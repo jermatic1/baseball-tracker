@@ -1,3 +1,4 @@
+mod aim;
 mod calibrate;
 mod capture;
 mod convert;

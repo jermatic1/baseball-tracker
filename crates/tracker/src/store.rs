@@ -311,6 +311,23 @@ impl Store {
         Ok(())
     }
 
+    /// A user's newest events from sessions of one activity, newest first.
+    pub fn recent_events(
+        &self,
+        user: i64,
+        activity: Activity,
+        limit: usize,
+    ) -> Result<Vec<HitRecord>, TrackerError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.record FROM events e JOIN sessions s ON s.id = e.session
+             WHERE s.user = ?1 AND s.activity = ?2 ORDER BY e.id DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![user, activity.as_str(), limit as i64], |r| {
+            r.get::<_, String>(0)
+        })?;
+        rows.map(|text| Ok(serde_json::from_str(&text?)?)).collect()
+    }
+
     /// A session's events in the order they were recorded.
     pub fn events(&self, session: i64) -> Result<Vec<HitRecord>, TrackerError> {
         let mut stmt = self

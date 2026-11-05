@@ -13,6 +13,9 @@ use tracker::{
     ModelRecord, MountConfig, Session, SessionMeta, Store, User,
 };
 
+/// How many of a pitcher's latest pitches their release height is read from.
+const RELEASE_SAMPLE: usize = 20;
+
 use crate::protocol::{ModelStatus, ServerMsg, SessionInfo, UserInfo};
 
 /// Detection runs while a session is active or a client other than a page
@@ -599,6 +602,24 @@ impl Hub {
     pub fn history(&self) -> Result<crate::history::History, String> {
         let store = self.store.lock().map_err(|e| e.to_string())?;
         crate::history::build(&store).map_err(|e| e.to_string())
+    }
+
+    /// A pitcher's release height in inches, averaged over their last
+    /// pitches that measured one, with how many that was.
+    pub fn release_height(&self, user: i64) -> Result<Option<(f64, usize)>, String> {
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        let heights: Vec<f64> = store
+            .recent_events(user, Activity::Pitching, RELEASE_SAMPLE)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter_map(|e| e.pitch.and_then(|p| p.release_height))
+            .collect();
+        Ok((!heights.is_empty()).then(|| {
+            (
+                heights.iter().sum::<f64>() / heights.len() as f64,
+                heights.len(),
+            )
+        }))
     }
 
     /// Every session, newest first, with its user's name.
