@@ -6,6 +6,7 @@
 	import Stat from '#lib/components/Stat.svelte';
 	import Segmented from '#lib/components/Segmented.svelte';
 	import Empty from '#lib/components/Empty.svelte';
+	import ZonePlot from '#lib/components/ZonePlot.svelte';
 
 	interface History {
 		sessions: {
@@ -52,6 +53,9 @@
 		}
 		return (live.summary?.lines ?? []).map((l) => [sentence(l.label), l.value.toLowerCase(), '']);
 	});
+
+	// The pitches shown, newest first, and the zone the latest was judged by.
+	let pitches = $derived(live.events.flatMap((e) => (e.record.pitch ? [e.record.pitch] : [])));
 
 	// Status as badges: capture, detector, clips, and the model.
 	let chips = $derived.by((): [string, string][] => {
@@ -181,6 +185,18 @@
 		{#each tiles as [label, value, note] (label)}
 			<div class="odd:last:col-span-2 sm:odd:last:col-span-1"><Stat {label} {value} {note} /></div>
 		{/each}
+	</div>
+{/if}
+
+{#if pitches.length}
+	<div class="card surface mt-4">
+		<div class="card-body gap-4 p-3 sm:flex-row sm:items-start sm:p-4">
+			<div class="mx-auto w-48 shrink-0 sm:mx-0"><ZonePlot zone={pitches[0].zone} {pitches} /></div>
+			<div class="min-w-0 flex-1 text-sm">
+				<div class="caption mb-1">Strike zone</div>
+				<p class="opacity-70">From behind the plate. Hollow is where the ball crossed the plate; filled is the same throw from the simulated distance, green for a strike and red for a ball.</p>
+			</div>
+		</div>
 	</div>
 {/if}
 

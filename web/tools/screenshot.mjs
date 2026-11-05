@@ -1,6 +1,7 @@
 // Renders every page of the app at phone and desktop widths against the mock
-// tracker, then the tracker page between sessions, with the tracker gone,
-// and with no detector yet, for checking layouts. Run from the repository root by
+// tracker, then the tracker page during a pitching session, between
+// sessions, with the tracker gone, and with no detector yet, for checking
+// layouts. Run from the repository root by
 // `task screenshot`; output lands in dist/screenshots. CHROME names the
 // browser executable when it is not on the path as chromium or chrome.
 import { spawn, spawnSync } from 'node:child_process';
@@ -98,6 +99,23 @@ try {
 				await page.close();
 			}
 		}
+		// A pitching session with a few pitches in, for the strike zone plot.
+		const pitching = await browser.newPage();
+		await pitching.setViewport(sizes.desktop);
+		await open(pitching, '/');
+		await (await pitching.waitForSelector('::-p-text(End session)')).click();
+		await (await pitching.waitForSelector('::-p-text(Pitching)')).click();
+		await (await pitching.waitForSelector('::-p-text(Start session)')).click();
+		await pitching.waitForSelector('::-p-text(Strike zone)', { timeout: 30000 });
+		await new Promise((r) => setTimeout(r, 4500));
+		await shoot(pitching, 'tracker-pitching-desktop');
+		await pitching.close();
+		const pitchingPhone = await browser.newPage();
+		await pitchingPhone.setViewport(sizes.phone);
+		await open(pitchingPhone, '/');
+		await pitchingPhone.waitForSelector('::-p-text(Strike zone)');
+		await shoot(pitchingPhone, 'tracker-pitching-phone');
+		await pitchingPhone.close();
 		// The start form once the session ends, then the page with no tracker.
 		const page = await browser.newPage();
 		await page.setViewport(sizes.phone);

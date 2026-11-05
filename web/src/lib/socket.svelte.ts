@@ -61,6 +61,22 @@ export interface Location {
 	height: number;
 }
 
+/** The strike zone in inches: `width` across, `bottom` to `top` above the ground. */
+export interface Zone {
+	width: number;
+	bottom: number;
+	top: number;
+}
+
+export interface Pitch {
+	release_velocity: number;
+	plate_velocity: number;
+	location: Location;
+	simulated_location: Location;
+	call: string;
+	zone: Zone;
+}
+
 export interface HitRecord {
 	kind: string;
 	hit_type?: string;
@@ -69,13 +85,7 @@ export interface HitRecord {
 	spray_angle: number | null;
 	pitch_velocity: number | null;
 	hit?: { carry: number };
-	pitch?: {
-		release_velocity: number;
-		plate_velocity: number;
-		location: Location;
-		simulated_location: Location;
-		call: string;
-	};
+	pitch?: Pitch;
 	contact?: { kind: string };
 	samples: number;
 }

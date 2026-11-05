@@ -4,7 +4,8 @@
 	import { getJson } from '#lib/api.ts';
 	import ClipList from '#lib/components/ClipList.svelte';
 	import Empty from '#lib/components/Empty.svelte';
-	import type { Location } from '#lib/socket.svelte.ts';
+	import ZonePlot from '#lib/components/ZonePlot.svelte';
+	import type { Location, Pitch } from '#lib/socket.svelte.ts';
 
 	interface Ball {
 		x: number;
@@ -26,7 +27,7 @@
 		spray_angle: number;
 		contact?: { kind: string; x: number; y: number; z: number };
 		hit?: { carry: number; hang_time: number };
-		pitch?: { release_velocity: number; plate_velocity: number; location: Location; simulated_location: Location };
+		pitch?: Pitch;
 		samples: number;
 		confident: boolean;
 	}
@@ -78,6 +79,7 @@
 		bmp.close();
 	}
 	const loc = (l: Location) => `${l.side.toFixed(0)} in, ${l.height.toFixed(0)} in high`;
+	let pitches = $derived((clip?.events ?? []).flatMap((h) => (h.pitch ? [h.pitch] : [])));
 	const session = page.params.id === 'local' ? '' : page.params.id;
 	// Label and value pairs for one event's card.
 	function facts(h: Hit): [string, string][] {
@@ -149,6 +151,17 @@
 			<span class="text-sm whitespace-nowrap tabular-nums">{i} / {Math.max(0, n - 1)}</span>
 		</div>
 		{#if status}<div role="alert" class="alert alert-error alert-soft mt-3">{status}</div>{/if}
+		{#if pitches.length}
+			<div class="card surface mt-4">
+				<div class="card-body gap-4 p-3 sm:flex-row sm:items-start sm:p-4">
+					<div class="mx-auto w-48 shrink-0 sm:mx-0"><ZonePlot zone={pitches[0].zone} {pitches} /></div>
+					<div class="min-w-0 flex-1 text-sm">
+						<div class="caption mb-1">Strike zone</div>
+						<p class="opacity-70">From behind the plate. Hollow is where the ball crossed the plate; filled is the same throw from the simulated distance, green for a strike and red for a ball.</p>
+					</div>
+				</div>
+			</div>
+		{/if}
 
 		<ul class="list surface rounded-box mt-4">
 			{#each clip?.events ?? [] as h, k (k)}
