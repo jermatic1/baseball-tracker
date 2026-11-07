@@ -157,7 +157,7 @@
 					<div class="mx-auto w-48 shrink-0 sm:mx-0"><ZonePlot zone={pitches[0].zone} {pitches} /></div>
 					<div class="min-w-0 flex-1 text-sm">
 						<div class="caption mb-1">Strike zone</div>
-						<p class="opacity-70">From behind the plate. Hollow is where the ball crossed the plate; filled is the same throw from the simulated distance, green for a strike and red for a ball.</p>
+						<p class="opacity-70">From the mound. Hollow is where the ball crossed the plate; filled is the same throw from the simulated distance, green for a strike and red for a ball.</p>
 					</div>
 				</div>
 			</div>

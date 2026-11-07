@@ -152,8 +152,8 @@ pub struct PitchPlate {
     pub zone: ZoneConfig,
 }
 
-/// Inches from the centre of the plate, positive toward first base, and
-/// above the ground.
+/// Inches from the centre of the plate, positive to the pitcher's right
+/// (toward third base), and above the ground.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Location {
     pub side: f64,
@@ -172,6 +172,8 @@ pub struct HitRecord {
     pub start: f64,
     pub exit_velocity: f64,
     pub launch_angle: f64,
+    /// Degrees off centre field toward right field for a hit; for a pitch,
+    /// off straight-at-the-plate toward the pitcher's right.
     pub spray_angle: f64,
     /// Speed of the incoming ball when a pitch was tracked before this hit.
     pub pitch_velocity: Option<f64>,

@@ -158,8 +158,8 @@ impl Goal {
         let hy = (p.simulated_location.height - z.bottom) / (z.top - z.bottom);
         let third = 1.0 / 3.0;
         let toward_batter = match bats {
-            Hand::Right => -sx,
-            Hand::Left => sx,
+            Hand::Right => sx,
+            Hand::Left => -sx,
         };
         match self.target {
             Target::Any => true,
@@ -631,7 +631,7 @@ mod tests {
         let high = pitch(0.0, 39.0, 40.0);
         let low = pitch(0.0, 21.0, 40.0);
         let middle = pitch(0.0, 30.0, 40.0);
-        let first_base_side = pitch(7.0, 30.0, 40.0);
+        let first_base_side = pitch(-7.0, 30.0, 40.0);
         let ball = pitch(12.0, 30.0, 40.0);
         assert!(goal(Target::High).met(Hand::Right, &high));
         assert!(!goal(Target::High).met(Hand::Right, &low));

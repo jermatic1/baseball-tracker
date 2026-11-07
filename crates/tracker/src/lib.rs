@@ -159,7 +159,11 @@ pub fn process_clip(
             start: samples[0].t_ns as f64 / 1e9,
             exit_velocity: est.exit_velocity,
             launch_angle: est.launch_angle,
-            spray_angle: est.spray_angle,
+            spray_angle: if kind == EventKind::Pitch {
+                traj.pitch_direction()
+            } else {
+                est.spray_angle
+            },
             pitch_velocity,
             hit_type: (kind == EventKind::Hit).then(|| HitType::from_launch_deg(est.launch_angle)),
             contact,
@@ -224,7 +228,7 @@ fn pitch_plate(
     let ([sx, sy, _], _) =
         flight::at_depth([x, y, PLATE_FRONT_M], plate_v, PLATE_FRONT_M + extra, air)?;
     let simulated_location = Location {
-        side: inches(sx),
+        side: -inches(sx),
         height: inches(sy),
     };
     let call = if zone.contains(simulated_location.side, simulated_location.height) {
@@ -237,7 +241,7 @@ fn pitch_plate(
         release_height: Some(inches(release_y)),
         plate_velocity: mph(speed(plate_v)),
         location: Location {
-            side: inches(x),
+            side: -inches(x),
             height: inches(y),
         },
         simulated_location,
@@ -959,7 +963,8 @@ mod tests {
         let p = pitch_plate(&traj, &cfg, &zone, air).expect("crosses the plate");
         assert!(p.location.height > 0.0);
         assert!(p.simulated_location.height < p.location.height - 12.0);
-        assert!((p.location.side - inches(0.1)).abs() < 1e-9);
+        // First-base side is the pitcher's left.
+        assert!((p.location.side + inches(0.1)).abs() < 1e-9);
         assert!(p.plate_velocity < mph(20.0) && p.plate_velocity > mph(20.0) - 3.0);
         let same = pitch_plate(&traj, &PitchingConfig::default(), &zone, air).unwrap();
         assert_eq!(same.location, same.simulated_location);

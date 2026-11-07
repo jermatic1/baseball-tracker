@@ -219,6 +219,12 @@ impl Trajectory {
         [self.v[0], self.v[1] - G * t, self.v[2]]
     }
 
+    /// Degrees a pitch heads off straight-at-the-plate as the pitcher sees
+    /// it, positive to the pitcher's right (toward third base).
+    pub fn pitch_direction(&self) -> f64 {
+        (-self.v[0]).atan2(self.v[2]).to_degrees()
+    }
+
     pub fn estimate(&self, samples: usize) -> Option<HitEstimate> {
         let [vx, vy, vz] = self.v;
         let speed = (vx * vx + vy * vy + vz * vz).sqrt();
@@ -360,6 +366,20 @@ mod tests {
             let q = unproject(u, v, z, &intr, &mount);
             assert!(norm(sub(p, q)) < 1e-9, "{p:?} -> {q:?}");
         }
+    }
+
+    #[test]
+    fn pitch_direction_is_seen_from_the_mound() {
+        let pitch = |vx| Trajectory {
+            t0_ns: 0,
+            p0: [0.0, 1.5, -15.0],
+            v: [vx, 0.0, 30.0],
+        };
+        assert!(pitch(0.0).pitch_direction().abs() < 1e-9);
+        assert!(
+            pitch(-1.0).pitch_direction() > 0.0,
+            "toward third is the pitcher's right"
+        );
     }
 
     #[test]

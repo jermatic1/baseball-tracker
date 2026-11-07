@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The strike zone from behind the plate with where pitches crossed. A
+	// The strike zone from the mound with where pitches crossed. A
 	// hollow dot is where the ball really crossed the front of the plate; the
 	// filled dot, coloured by the call, is where the same throw crosses from
 	// the simulated mound distance. They coincide when nothing is projected.
