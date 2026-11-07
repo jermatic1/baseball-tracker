@@ -79,7 +79,7 @@
 	});
 	let closer = $derived(!!aim && aim.actual_distance < aim.simulated_distance);
 
-	// Status as badges: capture, detector, clips, and the model.
+	// Status as badges: capture, detector, clips, and a model that needs attention.
 	let chips = $derived.by((): [string, string][] => {
 		const m = live.status;
 		if (!m) return [];
@@ -88,8 +88,7 @@
 		if (d) out.push([`detector ${d.state} · ${d.rate.toFixed(0)} fps`, ''], [`${d.clips} clips`, '']);
 		const model = m.model;
 		if (model?.loading) out.push(['loading model', 'badge-soft badge-warning']);
-		else if (model?.file) out.push([`${model.file} ${model.sha1?.slice(0, 7) ?? ''}`.trim(), '']);
-		else out.push(['no model', 'badge-soft badge-warning']);
+		else if (!model?.file) out.push(['no model', 'badge-soft badge-warning']);
 		if (model && model.untrained > 0) out.push([`${model.untrained} sessions to train on`, 'badge-soft badge-warning']);
 		const others = m.clients.filter((c) => c !== 'page' && !c.endsWith(' page'));
 		if (others.length) out.push([`simulators ${others.join(', ')}`, '']);
@@ -258,14 +257,13 @@
 {/if}
 
 <h2>Events</h2>
-<div class="surface rounded-box overflow-hidden">
-	{#if !live.events.length}
-		<Empty title="Nothing measured yet">Every hit and pitch shows here as it happens.</Empty>
-	{:else}
-		<ul class="list sm:hidden">
+{#if !live.events.length}
+	<div class="surface rounded-box"><Empty title="Nothing measured yet">Every hit and pitch shows here as it happens.</Empty></div>
+{:else}
+	<ul class="rows sm:hidden">
 			{#each live.events as { clip, record: r } (clip)}
 				{@const [value, unit] = headline(r)}
-				<li class="list-row block">
+				<li class="p-4">
 					<div class="flex items-center justify-between text-xs opacity-60">
 						<span>Clip {clip}</span><span>{kind(r)}</span>
 					</div>
@@ -281,7 +279,8 @@
 				</li>
 			{/each}
 		</ul>
-		<table class="table hidden sm:table">
+	<div class="surface rounded-box hidden overflow-hidden sm:block">
+		<table class="table">
 			<thead>
 				<tr>
 					<th>Clip</th><th>Kind</th><th class="text-right">Exit mph</th><th class="text-right">Launch</th><th class="text-right">Spray</th>
@@ -305,13 +304,13 @@
 				{/each}
 			</tbody>
 		</table>
-	{/if}
-</div>
+	</div>
+{/if}
 
 <h2>Past sessions</h2>
-<ul class="list surface rounded-box">
+<ul class="rows">
 	{#each history.sessions as s (s.id)}
-		<li class="list-row flex flex-col gap-3 sm:flex-row sm:items-start">
+		<li class="flex flex-col gap-3 p-4 sm:flex-row sm:items-start">
 			<div class="sm:w-48">
 				<div class="font-semibold">Session {s.id} · {userName(s.user)}</div>
 				<div class="text-xs opacity-60">{s.activity} · {s.mode}</div>

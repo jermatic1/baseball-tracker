@@ -139,7 +139,7 @@
 
 <h1>Sessions</h1>
 
-<div class="bg-base-100/95 sticky top-14 z-10 -mx-4 mt-4 flex items-center gap-3 px-4 py-3 backdrop-blur">
+<div class="bg-base-100/95 sticky top-14 z-10 -mx-4 flex items-center gap-3 px-4 py-3 backdrop-blur sm:mt-4">
 	<input bind:value={filter} type="search" placeholder="Search sessions" class="input w-full sm:w-72" />
 	<span class="text-sm whitespace-nowrap opacity-60 tabular-nums">{shown.length} of {sessions.length}</span>
 	{#if ready}
@@ -150,10 +150,10 @@
 	{#each knownTags as t (t)}<option value={t}></option>{/each}
 </datalist>
 
-<ul class="list surface rounded-box mt-2">
+<div class="rows mt-2">
 	{#each shown as s (s.id)}
-		<li class="list-row flex flex-col gap-3 sm:flex-row sm:items-start">
-			<div class="min-w-0 flex-1">
+		<details class="collapse collapse-arrow group">
+			<summary class="collapse-title">
 				<div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
 					<span class="font-semibold">{title(s)}</span>
 					<span class="text-sm opacity-70">{meta(s)}</span>
@@ -161,54 +161,67 @@
 				<div class="mt-2 flex flex-wrap gap-1.5">
 					<span class="badge badge-ghost badge-sm">{s.clips} {s.clips === 1 ? 'clip' : 'clips'}</span>
 					<span class="badge badge-ghost badge-sm">{s.reviewed} reviewed</span>
-					{#if s.model}<span class="badge badge-ghost badge-sm" title={s.model.sha1}>{s.model.file} {s.model.sha1.slice(0, 7)}</span>{/if}
-					{#if s.exposure != null}<span class="badge badge-ghost badge-sm">{s.exposure} µs · ISO {s.gain}</span>{/if}
-					{#if s.calibration_changed}<span class="badge badge-soft badge-warning badge-sm" title="the mount differs from the previous session's">recalibrated</span>{/if}
+					{#if s.training === 'include'}<span class="badge badge-soft badge-primary badge-sm">training</span>
+					{:else if s.training === 'holdout'}<span class="badge badge-outline badge-sm">held out</span>{/if}
 					{#if s.trained}<span class="badge badge-soft badge-success badge-sm">in the live model</span>{/if}
+					{#if s.calibration_changed}<span class="badge badge-soft badge-warning badge-sm" title="the mount differs from the previous session's">recalibrated</span>{/if}
 					{#if redetect?.running && redetect.session === s.id}
 						<span class="badge badge-soft badge-warning badge-sm"><span class="loading loading-spinner loading-xs"></span>re-detecting {redetect.done} of {redetect.total}</span>
 					{/if}
+					{#each s.tags as t (t)}<span class="badge badge-soft badge-info badge-sm group-open:hidden">{t}</span>{/each}
 				</div>
-				<div class="mt-3 flex flex-wrap items-center gap-2">
-					{#each s.tags as t (t)}
-						<span class="badge badge-soft badge-info gap-1">
-							{t}
-							<button class="cursor-pointer opacity-70 hover:opacity-100" aria-label="Remove {t}" onclick={() => save(s, { tags: s.tags.filter((x) => x !== t) })}>×</button>
-						</span>
-					{/each}
-					<input
-						class="input input-sm w-36"
-						placeholder="Add tag"
-						list="known-tags"
-						bind:value={newTag[s.id]}
-						onkeydown={(e) => {
-							if (e.key === 'Enter' || e.key === ',') {
-								e.preventDefault();
-								addTag(s);
-							}
-						}}
-						onblur={() => addTag(s)}
-					/>
-					<input class="input input-sm min-w-40 flex-1" placeholder="Notes" value={s.notes} onchange={(e) => setNotes(s, e)} />
+			</summary>
+			<div class="collapse-content">
+				<div class="flex flex-col gap-3 sm:flex-row sm:items-start">
+					<div class="flex min-w-0 flex-1 flex-col gap-3">
+						{#if s.model || s.exposure != null}
+							<div class="flex flex-wrap gap-1.5">
+								{#if s.model}<span class="badge badge-ghost badge-sm" title={s.model.sha1}>{s.model.file} {s.model.sha1.slice(0, 7)}</span>{/if}
+								{#if s.exposure != null}<span class="badge badge-ghost badge-sm">{s.exposure} µs · ISO {s.gain}</span>{/if}
+							</div>
+						{/if}
+						<div class="flex flex-wrap items-center gap-2">
+							{#each s.tags as t (t)}
+								<span class="badge badge-soft badge-info gap-1">
+									{t}
+									<button class="cursor-pointer opacity-70 hover:opacity-100" aria-label="Remove {t}" onclick={() => save(s, { tags: s.tags.filter((x) => x !== t) })}>×</button>
+								</span>
+							{/each}
+							<input
+								class="input input-sm w-36"
+								placeholder="Add tag"
+								list="known-tags"
+								bind:value={newTag[s.id]}
+								onkeydown={(e) => {
+									if (e.key === 'Enter' || e.key === ',') {
+										e.preventDefault();
+										addTag(s);
+									}
+								}}
+								onblur={() => addTag(s)}
+							/>
+							<input class="input input-sm min-w-40 flex-1" placeholder="Notes" value={s.notes} onchange={(e) => setNotes(s, e)} />
+						</div>
+					</div>
+					<div class="flex flex-wrap items-end gap-2 sm:flex-col sm:items-end">
+						<div>
+							<div class="caption mb-1 sm:text-right">Training</div>
+							<Segmented options={TRAINING} value={s.training} onchange={(v) => save(s, { training: v })} small />
+						</div>
+						<div class="flex gap-2 sm:mt-1">
+							{#if s.clips > 0}
+								<a href="/sessions/{s.id}/label" class="btn btn-sm">Label</a>
+								<a href="/sessions/{s.id}/playback" class="btn btn-sm">Playback</a>
+								<button class="btn btn-sm" disabled={!!redetect?.running} title="Detect again with the live model" onclick={() => startRedetect(s)}>Re-detect</button>
+							{/if}
+							<button class="btn btn-sm btn-error btn-soft" onclick={() => confirmDelete(s)}>Delete</button>
+						</div>
+					</div>
 				</div>
 			</div>
-			<div class="flex flex-wrap items-end gap-2 sm:flex-col sm:items-end">
-				<div>
-					<div class="caption mb-1 sm:text-right">Training</div>
-					<Segmented options={TRAINING} value={s.training} onchange={(v) => save(s, { training: v })} small />
-				</div>
-				<div class="flex gap-2 sm:mt-1">
-					{#if s.clips > 0}
-						<a href="/sessions/{s.id}/label" class="btn btn-sm">Label</a>
-						<a href="/sessions/{s.id}/playback" class="btn btn-sm">Playback</a>
-						<button class="btn btn-sm" disabled={!!redetect?.running} title="Detect again with the live model" onclick={() => startRedetect(s)}>Re-detect</button>
-					{/if}
-					<button class="btn btn-sm btn-error btn-soft" onclick={() => confirmDelete(s)}>Delete</button>
-				</div>
-			</div>
-		</li>
+		</details>
 	{:else}
-		<li>
+		<div>
 			{#if !loaded}
 				<Empty title="Loading" />
 			{:else if sessions.length}
@@ -216,9 +229,9 @@
 			{:else}
 				<Empty title="No sessions yet">Start one on the <a href="/" class="link">Tracker</a> page.</Empty>
 			{/if}
-		</li>
+		</div>
 	{/each}
-</ul>
+</div>
 
 <dialog bind:this={dialog} class="modal">
 	<div class="modal-box">

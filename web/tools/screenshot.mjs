@@ -99,6 +99,14 @@ try {
 				await page.close();
 			}
 		}
+		// The sessions page with one session opened for editing.
+		const opened = await browser.newPage();
+		await opened.setViewport(sizes.phone);
+		await open(opened, '/sessions');
+		await (await opened.waitForSelector('summary')).click();
+		await new Promise((r) => setTimeout(r, 500));
+		await shoot(opened, 'sessions-open-phone');
+		await opened.close();
 		// A pitching session with a few pitches in, for the strike zone plot.
 		const pitching = await browser.newPage();
 		await pitching.setViewport(sizes.desktop);
@@ -124,9 +132,10 @@ try {
 		await page.waitForSelector('::-p-text(Start session)');
 		await new Promise((r) => setTimeout(r, 1000));
 		await shoot(page, 'tracker-idle-phone');
-		await (await page.waitForSelector('[role="button"][aria-label="menu"]')).click();
+		await (await page.waitForSelector('label[aria-label="menu"]')).click();
+		await new Promise((r) => setTimeout(r, 500));
 		await shoot(page, 'menu-phone');
-		await page.mouse.click(5, 400);
+		await page.click('.drawer-overlay');
 		mock.kill('SIGINT');
 		await page.waitForSelector('::-p-text(Not connected)');
 		await shoot(page, 'offline-phone');

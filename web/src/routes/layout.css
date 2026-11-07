@@ -46,8 +46,9 @@
 		@apply antialiased;
 		font-size: 112.5%;
 	}
+	/* On phones the top bar names the page, so its heading would repeat it. */
 	h1 {
-		@apply text-2xl font-semibold tracking-tight;
+		@apply text-2xl font-semibold tracking-tight max-sm:hidden;
 	}
 	h2 {
 		@apply mt-8 mb-3 text-base font-semibold;
@@ -69,6 +70,14 @@
 	/* A bordered box: the card and list surfaces share it. */
 	.surface {
 		@apply bg-base-200 border-base-300 border;
+	}
+	/* A list of records, each on its own surface so the page shows between
+	   them. Rows set their own padding. */
+	.rows {
+		@apply grid gap-3;
+	}
+	.rows > * {
+		@apply bg-base-200 border-base-300 rounded-box border;
 	}
 	/* Plain buttons sit one step above a surface, so they show on cards. */
 	.btn {

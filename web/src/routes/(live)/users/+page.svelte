@@ -101,9 +101,9 @@
 	</div>
 </div>
 
-<ul class="list surface rounded-box mt-4">
+<ul class="rows mt-4">
 	{#each users as u (u.name)}
-		<li class="list-row flex flex-col gap-3 sm:flex-row sm:items-start">
+		<li class="flex flex-col gap-3 p-4 sm:flex-row sm:items-start">
 			<div class="sm:w-48">
 				{#if renaming === u.name}
 					<form class="flex gap-2" onsubmit={(e) => { e.preventDefault(); rename(u); }}>

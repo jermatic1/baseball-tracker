@@ -163,9 +163,9 @@
 			</div>
 		{/if}
 
-		<ul class="list surface rounded-box mt-4">
+		<ul class="rows mt-4">
 			{#each clip?.events ?? [] as h, k (k)}
-				<li class="list-row block">
+				<li class="p-4">
 					<div class="flex items-center justify-between text-xs opacity-60">
 						<span>{h.kind}{h.hit_type ? ` · ${h.hit_type.replace('_', ' ')}` : ''}</span>
 						<span class="badge badge-sm badge-soft {h.confident ? 'badge-success' : 'badge-warning'}">{h.confident ? 'confident' : 'low confidence'}</span>

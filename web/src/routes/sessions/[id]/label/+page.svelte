@@ -311,11 +311,11 @@
 					<button class="btn btn-square join-item" aria-label="previous clip" onclick={() => stepClip(-1)}>‹</button>
 					<button class="btn btn-square join-item" aria-label="next clip" onclick={() => stepClip(1)}>›</button>
 				</div>
-				<button class="btn {showKeys ? 'btn-selected' : ''}" aria-pressed={showKeys} onclick={() => (showKeys = !showKeys)}>Shortcuts</button>
+				<button class="btn pointer-coarse:hidden {showKeys ? 'btn-selected' : ''}" aria-pressed={showKeys} onclick={() => (showKeys = !showKeys)}>Shortcuts</button>
 			</span>
 		</div>
 		{#if showKeys}
-			<dl class="card surface mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 p-4 text-sm">
+			<dl class="card surface mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 p-4 text-sm pointer-coarse:hidden">
 				{#each KEYS as [key, what] (key + what)}
 					<dt><kbd class="kbd kbd-sm">{key}</kbd></dt><dd class="opacity-70">{what}</dd>
 				{/each}
@@ -324,13 +324,13 @@
 		{#if status}<div role="alert" class="alert alert-error alert-soft mt-3">{status}</div>{/if}
 
 		{#if mode === 'tracks'}
-			<ul class="list surface rounded-box mt-3" bind:this={tracksEl}>
+			<ul class="rows mt-3" bind:this={tracksEl}>
 				{#each tracks as t, k (`${clipId}:${k}`)}
 					<li
 						role="option"
 						aria-selected={k === sel}
 						tabindex="-1"
-						class="list-row flex flex-wrap items-center gap-3 {k === sel ? 'bg-base-300/60' : ''} {t.verdict ? 'opacity-50' : ''}"
+						class="flex flex-wrap items-center gap-3 p-4 {k === sel ? 'bg-base-300/60' : ''} {t.verdict ? 'opacity-50' : ''}"
 						onclick={(ev) => (ev.target as HTMLElement).tagName !== 'BUTTON' && selectTrack(k)}
 						onkeydown={() => {}}
 					>
@@ -351,7 +351,7 @@
 					<li><Empty title="No detections in this clip">Mark it empty, or open Frames and click the ball.</Empty></li>
 				{/each}
 				{#if tracks.some((t) => t.kind === 'moving' && t.verdict !== 'ball')}
-					<li class="list-row"><button class="btn btn-sm" onclick={acceptMoving}>Accept every moving track</button></li>
+					<li class="p-4"><button class="btn btn-sm" onclick={acceptMoving}>Accept every moving track</button></li>
 				{/if}
 			</ul>
 		{:else}
