@@ -91,6 +91,8 @@ export interface HitRecord {
 }
 
 export interface Event {
+	/** Counts up per event received; a clip can carry several records. */
+	seq: number;
 	clip: string;
 	record: HitRecord;
 }
@@ -146,6 +148,7 @@ let ws: WebSocket | null = null;
 let retry = 1000;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let started = false;
+let seq = 0;
 const handlers = new Map<string, Set<Handler>>();
 
 /** Register for a message type, `open`, `close`, or `blob`; returns the unregister. */
@@ -228,7 +231,7 @@ function keep(m: Message) {
 			live.stats = null;
 			break;
 		case 'event':
-			live.events = [m, ...live.events].slice(0, 20);
+			live.events = [{ ...m, seq: ++seq }, ...live.events].slice(0, 20);
 			break;
 		case 'recorded':
 			live.recorded = m;

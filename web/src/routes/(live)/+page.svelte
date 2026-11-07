@@ -261,7 +261,7 @@
 	<div class="surface rounded-box"><Empty title="Nothing measured yet">Every hit and pitch shows here as it happens.</Empty></div>
 {:else}
 	<ul class="rows sm:hidden">
-			{#each live.events as { clip, record: r } (clip)}
+			{#each live.events as { seq, clip, record: r } (seq)}
 				{@const [value, unit] = headline(r)}
 				<li class="p-4">
 					<div class="flex items-center justify-between text-xs opacity-60">
@@ -288,7 +288,7 @@
 				</tr>
 			</thead>
 			<tbody class="tabular-nums">
-				{#each live.events as { clip, record: r } (clip)}
+				{#each live.events as { seq, clip, record: r } (seq)}
 					<tr>
 						<td>{clip}</td>
 						<td>{kind(r)}</td>

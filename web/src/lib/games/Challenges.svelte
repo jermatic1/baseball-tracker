@@ -86,7 +86,7 @@
 	<div class="surface rounded-box"><Empty title="No pitches yet">Each pitch shows here with its call and the batter's result.</Empty></div>
 {:else}
 	<ul class="rows sm:hidden">
-			{#each pitches as { clip, record: r } (clip)}
+			{#each pitches as { seq, clip, record: r } (seq)}
 				{@const l = r.pitch!.simulated_location}
 				{@const o = outcomes[clip] ?? {}}
 				<li class="p-4">
@@ -111,7 +111,7 @@
 				<tr><th>Clip</th><th class="text-right">mph</th><th>Location</th><th>Call</th><th>Goal</th><th>Swing</th><th>Batted</th></tr>
 			</thead>
 			<tbody class="tabular-nums">
-				{#each pitches as { clip, record: r } (clip)}
+				{#each pitches as { seq, clip, record: r } (seq)}
 					{@const l = r.pitch!.simulated_location}
 					{@const o = outcomes[clip] ?? {}}
 					<tr>
