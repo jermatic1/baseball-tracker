@@ -25,7 +25,8 @@ import kotlin.concurrent.thread
  * found by its discovery broadcast, or at the address last used, or one
  * the user types when nothing answers. The page is padded clear of the
  * status bar, navigation bar, cutout and keyboard, which the window
- * otherwise draws under.
+ * otherwise draws under. Back is the page's to handle; it exits when the
+ * page has nowhere left to go.
  */
 class MainActivity : ComponentActivity() {
     private lateinit var web: WebView
@@ -48,7 +49,9 @@ class MainActivity : ComponentActivity() {
         setContentView(frame(web))
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (web.canGoBack()) web.goBack() else finish()
+                web.evaluateJavascript("window.trackerBack?.() ?? false") { handled ->
+                    if (handled != "true") finish()
+                }
             }
         })
         val saved = prefs.getString(URL, null)

@@ -45,6 +45,9 @@
 	html {
 		@apply antialiased;
 		font-size: 112.5%;
+		/* No double-tap zoom or edge bounce: it should feel like an app. */
+		touch-action: manipulation;
+		overscroll-behavior: none;
 	}
 	/* On phones the top bar names the page, so its heading would repeat it. */
 	h1 {

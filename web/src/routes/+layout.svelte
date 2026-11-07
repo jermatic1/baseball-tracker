@@ -2,7 +2,7 @@
 	import './layout.css';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { live, start } from '#lib/socket.svelte.ts';
 
 	let { children, data } = $props();
@@ -30,8 +30,18 @@
 	// The phone menu is a drawer; it closes on navigation and Escape.
 	let menu = $state(false);
 
+	// The Android app's Back: close the menu, else return to the tracker, else
+	// report false so the app exits.
+	function back() {
+		if (menu) menu = false;
+		else if (page.url.pathname !== '/') goto('/');
+		else return false;
+		return true;
+	}
+
 	onMount(() => {
 		start();
+		Object.assign(window, { trackerBack: back });
 	});
 	afterNavigate(() => (menu = false));
 
