@@ -168,7 +168,7 @@ pub(crate) mod server {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
     use axum::extract::State;
@@ -190,6 +190,7 @@ pub(crate) mod server {
         CalibrateAction, CameraStats, ClientMsg, FitSource, LiveStatus, RecordAction, ServerMsg,
         Status,
     };
+    use crate::stall::{self, Drops, Stages};
 
     const RECORD_QUEUE: usize = 32;
     const STATUS_PERIOD: Duration = Duration::from_millis(500);
@@ -404,7 +405,11 @@ pub(crate) mod server {
             ),
             Err(_) => return,
         };
+        let mut stages = Stages::new("capture");
+        let mut record_log = Drops::new("recorder");
+        let mut live_log = Drops::new("detector");
         while !stop.load(Ordering::Relaxed) {
+            stages.begin();
             if let Some(stats) = cam.take_stats() {
                 let drops = record_drops.swap(0, Ordering::Relaxed);
                 if let Ok(mut st) = state.lock() {
@@ -418,6 +423,7 @@ pub(crate) mod server {
                 };
                 (st.exposure_us, st.gain, st.ir_flood, st.ir_dot)
             };
+            stages.mark("state");
             if let Err(e) = cam.apply_controls(exposure_us, gain) {
                 eprintln!("{e}");
                 std::thread::sleep(Duration::from_millis(100));
@@ -426,9 +432,12 @@ pub(crate) mod server {
             if let Err(e) = cam.apply_lights(ir_flood, ir_dot) {
                 eprintln!("{e}");
             }
+            stages.mark("controls");
             match cam.poll(Duration::from_millis(0)) {
                 Ok(Some(frame)) => {
+                    stages.mark("poll");
                     let stored = Arc::new(to_stored(frame));
+                    stages.mark("copy");
                     let mut st = match state.lock() {
                         Ok(g) => g,
                         Err(_) => break,
@@ -436,17 +445,25 @@ pub(crate) mod server {
                     let tx = st.record_tx.clone();
                     st.latest = Some(Arc::clone(&stored));
                     drop(st);
+                    stages.mark("publish");
                     if let Some(tx) = tx {
-                        if tx.try_send(Some(Arc::clone(&stored))).is_err() {
+                        let accepted = tx.try_send(Some(Arc::clone(&stored))).is_ok();
+                        if !accepted {
                             record_drops.fetch_add(1, Ordering::Relaxed);
                         }
+                        record_log.record(accepted);
                     }
                     if let Some((tx, sent, drops)) = &live {
-                        match tx.try_send(stored) {
-                            Ok(()) => sent.fetch_add(1, Ordering::Relaxed),
-                            Err(_) => drops.fetch_add(1, Ordering::Relaxed),
-                        };
+                        let accepted = tx.try_send(stored).is_ok();
+                        if accepted {
+                            sent.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            drops.fetch_add(1, Ordering::Relaxed);
+                        }
+                        live_log.record(accepted);
                     }
+                    stages.mark("send");
+                    stages.check(format_args!(""));
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(1)),
                 Err(e) => {
@@ -663,6 +680,7 @@ pub(crate) mod server {
     /// it has started.
     fn start_record(app: &App) -> Result<(), String> {
         let mut st = app.state.lock().map_err(|e| e.to_string())?;
+        let locked = Instant::now();
         if st.stop.load(Ordering::Relaxed) {
             return Err("stopping".into());
         }
@@ -680,6 +698,7 @@ pub(crate) mod server {
         st.record_done = Some(done_rx);
         app.hub.set_recording(true);
         println!("recording");
+        stall::held("start recording", locked);
         Ok(())
     }
 
@@ -793,6 +812,7 @@ pub(crate) mod server {
         while !stop.load(Ordering::Relaxed) {
             tokio::time::sleep(STATUS_PERIOD).await;
             let Ok(st) = app.state.lock() else { break };
+            let locked = Instant::now();
             let detector = st.live.as_ref().and_then(|tap| {
                 tap.status.lock().ok().map(|s| {
                     let mut s = s.clone();
@@ -816,6 +836,7 @@ pub(crate) mod server {
                 model: app.hub.model_status(),
             };
             drop(st);
+            stall::held("status", locked);
             app.hub.send(&ServerMsg::Status(status));
         }
     }

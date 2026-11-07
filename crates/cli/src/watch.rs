@@ -29,6 +29,7 @@ use crate::convert::print_hit;
 use crate::detector::{Detector, FrameView};
 use crate::hub::Hub;
 use crate::protocol::{LiveBall, LiveStatus};
+use crate::stall::Stages;
 use crate::standby::{Engine, OnDemand, Open};
 
 /// Frames queued for the detector before the newest are dropped: about
@@ -329,6 +330,7 @@ fn detect_loop(
     let mut taken = 0u64;
     let mut meter = (Instant::now(), 0u32);
     let mut last_status = Instant::now();
+    let mut stages = Stages::new("detector");
     let set_status = |change: &dyn Fn(&mut LiveStatus)| {
         if let Ok(mut s) = status.lock() {
             change(&mut s);
@@ -424,6 +426,7 @@ fn detect_loop(
             println!("stopping with no episode open; skipping {skipped} queued frames");
             break;
         }
+        stages.begin();
         let Some(running) = engine.as_mut().filter(|_| hub.capturing()) else {
             if let Some(episode) = gate_closed(&mut watcher) {
                 let target = target.take().unwrap_or_else(|| Target::now(&hub));
@@ -452,6 +455,7 @@ fn detect_loop(
                 Vec::new()
             }
         };
+        stages.mark("detect");
         let calib = running.calib;
         let mount = hub.mount();
         let live: Vec<LiveBall> = balls
@@ -463,8 +467,10 @@ fn detect_loop(
             .collect();
         let was_open = watcher.state() == WatchState::Episode;
         let episode = watcher.observe(index, frame.t_ns, balls);
+        stages.mark("watch");
         if !was_open && watcher.state() == WatchState::Episode {
             target = Some(Target::now(&hub));
+            stages.mark("open episode");
         }
         ring.push_back((index, Arc::clone(&frame)));
         let cutoff = frame.t_ns.saturating_sub(preroll_ns);
@@ -496,14 +502,19 @@ fn detect_loop(
                 eprintln!("clip write failed: {e}");
                 writer = None;
             }
+            stages.mark(if was_open { "clip" } else { "clip start" });
         }
         if let Some(episode) = episode {
             let target = target.take().unwrap_or_else(|| Target::now(&hub));
             finish_episode(target, writer.take(), episode, &c, &done);
+            stages.mark("finish episode");
         }
         index += 1;
         meter.1 += 1;
         report(&watcher, live, taken, &mut meter);
+        stages.mark("status");
+        let lag = sent.load(Ordering::Relaxed).saturating_sub(taken);
+        stages.check(format_args!("lag {lag} frames"));
     }
     if let Some(episode) = watcher.flush() {
         let target = target.take().unwrap_or_else(|| Target::now(&hub));
