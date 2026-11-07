@@ -153,6 +153,12 @@ pub enum ServerMsg {
     Session {
         session: Option<SessionInfo>,
     },
+    /// The active session's newest events, newest first, after hello, so a
+    /// page that reconnects or reloads still shows them.
+    RecentEvents {
+        session: String,
+        events: Vec<HitRecord>,
+    },
     /// Running numbers for the active session: sent when it starts, after
     /// each of its events, and after hello while it is active.
     SessionStats {

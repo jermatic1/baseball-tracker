@@ -328,6 +328,15 @@ impl Store {
         rows.map(|text| Ok(serde_json::from_str(&text?)?)).collect()
     }
 
+    /// A session's newest events, newest first.
+    pub fn last_events(&self, session: i64, limit: usize) -> Result<Vec<HitRecord>, TrackerError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT record FROM events WHERE session = ?1 ORDER BY id DESC LIMIT ?2")?;
+        let rows = stmt.query_map(params![session, limit as i64], |r| r.get::<_, String>(0))?;
+        rows.map(|text| Ok(serde_json::from_str(&text?)?)).collect()
+    }
+
     /// A session's events in the order they were recorded.
     pub fn events(&self, session: i64) -> Result<Vec<HitRecord>, TrackerError> {
         let mut stmt = self

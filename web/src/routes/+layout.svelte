@@ -75,7 +75,7 @@
 					</ul>
 				</div>
 				<div class="navbar-end w-auto gap-2 px-2 text-xs opacity-70">
-					<span class="status {live.connected ? 'status-success' : 'status-error'}" aria-hidden="true"></span>
+					<span class="status {live.connected ? 'status-success' : live.link === 'connecting' ? 'status-warning' : 'status-error'}" aria-hidden="true"></span>
 					{live.link}
 				</div>
 			</div>

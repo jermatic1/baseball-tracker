@@ -16,6 +16,9 @@ use tracker::{
 /// How many of a pitcher's latest pitches their release height is read from.
 const RELEASE_SAMPLE: usize = 20;
 
+/// How many of the active session's events a client is sent after hello.
+const RECENT_EVENTS: usize = 10;
+
 use crate::protocol::{ModelStatus, ServerMsg, SessionInfo, UserInfo};
 
 /// Detection runs while a session is active or a client other than a page
@@ -343,8 +346,9 @@ impl Hub {
         })
     }
 
-    /// What a client is told after hello: the users, the session, the most
-    /// recent summary, and the state of each game it listed.
+    /// What a client is told after hello: the users, the session with its
+    /// stats and newest events, the most recent summary, and the state of
+    /// each game it listed.
     pub fn welcome(&self, games: &[String]) -> Vec<ServerMsg> {
         let Ok(store) = self.store.lock() else {
             return Vec::new();
@@ -353,6 +357,12 @@ impl Hub {
         if let Some(active) = self.active.read().ok().and_then(|a| a.clone()) {
             if let Ok(stats) = Self::stats_msg(&store, active.session.id) {
                 out.push(stats);
+            }
+            if let Ok(events) = store.last_events(active.session.id, RECENT_EVENTS) {
+                out.push(ServerMsg::RecentEvents {
+                    session: active.session.id.to_string(),
+                    events,
+                });
             }
         }
         if let Ok(Some(last)) = store.last_ended_session() {
@@ -995,6 +1005,17 @@ mod tests {
             "games answer after the event"
         );
         assert_eq!(dir.hits().unwrap().len(), 1);
+
+        for clip in ["0002", "0003"] {
+            hub.publish(&dir, Some(1), clip, vec![pitch(clip)]).unwrap();
+        }
+        let recent = hub.welcome(&[]).into_iter().find_map(|m| match m {
+            ServerMsg::RecentEvents { events, .. } => Some(events),
+            _ => None,
+        });
+        let clips: Vec<_> = recent.unwrap().into_iter().map(|r| r.clip).collect();
+        assert_eq!(clips, ["0003", "0002", "0001"], "newest first");
+        while rx.try_recv().is_ok() {}
 
         hub.game_message("echo", serde_json::json!({"type": "ping"}))
             .unwrap();

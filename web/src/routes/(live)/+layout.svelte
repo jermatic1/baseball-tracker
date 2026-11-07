@@ -1,12 +1,12 @@
 <script lang="ts">
-	// The pages that need a tracker: shown once one is connected and has sent
-	// its status, so each loads on connect and again after a reconnect.
+	// The pages that need a tracker: shown once one has sent its status, and
+	// kept through a short drop so they hold their state while it reconnects.
 	import { live, reconnect } from '#lib/socket.svelte.ts';
 
 	let { children } = $props();
 </script>
 
-{#if live.link === 'connected' && live.status}
+{#if live.link !== 'offline' && live.status}
 	{@render children()}
 {:else if live.link === 'offline'}
 	<div class="card surface mt-4 max-w-lg">

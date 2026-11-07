@@ -78,6 +78,7 @@ export interface Pitch {
 }
 
 export interface HitRecord {
+	clip: string;
 	kind: string;
 	hit_type?: string;
 	exit_velocity: number | null;
@@ -128,7 +129,7 @@ export type Link = 'connecting' | 'connected' | 'offline';
 
 export const live = $state({
 	connected: false,
-	/** Whether the tracker has answered yet, so pages can tell a first load from an outage. */
+	/** `connecting` covers a first load and a short drop; `offline` once the drop outlasts the grace. */
 	link: 'connecting' as Link,
 	status: null as Status | null,
 	session: null as Session | null,
@@ -144,10 +145,18 @@ export const live = $state({
 	gameState: {} as Record<string, Record<string, Message>>
 });
 
+// The tracker sends status twice a second, so this long a silence is a dead link.
+const QUIET = 5000;
+// A drop shorter than this, or one while the page is hidden, does not show as offline.
+const GRACE = 10000;
+const RETRY = 2000;
+
 let ws: WebSocket | null = null;
-let retry = 1000;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let started = false;
+let heard = 0;
+// When the link went down, or 0 while it is up.
+let down = 0;
 let seq = 0;
 const handlers = new Map<string, Set<Handler>>();
 
@@ -171,17 +180,38 @@ export function send(msg: object) {
 
 export const userName = (id: string) => live.users.find((u) => u.id === id)?.name ?? id;
 
-/** Connect once; every open reloads the data the pages fetched over HTTP. */
+/**
+ * Connect once and stay connected: every open reloads the data the pages
+ * fetched over HTTP, a silent link is dropped, and a page shown again or
+ * back online reconnects at once.
+ */
 export function start() {
 	if (started) return;
 	started = true;
+	down = Date.now();
 	connect();
+	setInterval(() => {
+		if (ws?.readyState === WebSocket.OPEN && Date.now() - heard > QUIET) reconnect();
+	}, 1000);
+	const wake = () => {
+		if (document.hidden) return;
+		if (!ws || (ws.readyState === WebSocket.OPEN && Date.now() - heard > QUIET)) reconnect();
+	};
+	document.addEventListener('visibilitychange', wake);
+	addEventListener('online', wake);
+	addEventListener('pageshow', wake);
 }
 
-/** Try now instead of waiting out the backoff. */
+/** Drop the link, if any, and connect now. */
 export function reconnect() {
 	clearTimeout(timer);
-	retry = 1000;
+	if (ws) {
+		ws.onopen = ws.onmessage = ws.onclose = null;
+		ws.close();
+		ws = null;
+		dropped();
+	}
+	down = Date.now();
 	live.link = 'connecting';
 	connect();
 }
@@ -191,7 +221,8 @@ function connect() {
 	ws = new WebSocket(`${scheme}://${location.host}/ws`);
 	ws.binaryType = 'blob';
 	ws.onopen = () => {
-		retry = 1000;
+		heard = Date.now();
+		down = 0;
 		live.connected = true;
 		live.link = 'connected';
 		live.error = '';
@@ -200,6 +231,7 @@ function connect() {
 		emit('open', null);
 	};
 	ws.onmessage = (e) => {
+		heard = Date.now();
 		if (e.data instanceof Blob) {
 			emit('blob', e.data);
 			return;
@@ -209,12 +241,17 @@ function connect() {
 		emit(m.type, m);
 	};
 	ws.onclose = () => {
-		live.connected = false;
-		live.link = 'offline';
-		emit('close', null);
-		timer = setTimeout(connect, retry);
-		retry = Math.min(retry * 2, 10000);
+		ws = null;
+		dropped();
+		live.link = !document.hidden && Date.now() - down > GRACE ? 'offline' : 'connecting';
+		timer = setTimeout(connect, RETRY);
 	};
+}
+
+function dropped() {
+	if (live.connected) emit('close', null);
+	live.connected = false;
+	if (!down) down = Date.now();
 }
 
 function keep(m: Message) {
@@ -232,6 +269,9 @@ function keep(m: Message) {
 			break;
 		case 'event':
 			live.events = [{ ...m, seq: ++seq }, ...live.events].slice(0, 20);
+			break;
+		case 'recent_events':
+			live.events = m.events.map((record: HitRecord) => ({ clip: record.clip, record, seq: ++seq }));
 			break;
 		case 'recorded':
 			live.recorded = m;
