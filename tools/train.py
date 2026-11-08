@@ -13,7 +13,7 @@ import shutil
 import sys
 from pathlib import Path
 
-MAX_GAP = 12
+VAL_EVERY = 5
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 400
 CLASSES = ["ball"]
@@ -25,60 +25,56 @@ def mark_class(mark):
     return mark.get("cls") or CLASSES[0]
 
 
-def interpolate(marks):
-    """Clicked boxes plus straight-line fills between clicks of one class."""
-    by_clip = {}
-    for mark in marks:
-        by_clip.setdefault(mark["clip"], []).append(mark)
-    out = []
-    for clip, rows in by_clip.items():
-        rows = sorted(rows, key=lambda m: m["index"])
-        clicks = [m for m in rows if m.get("kind") == "ball" and m.get("cx") is not None]
-        for mark in clicks:
-            out.append({**mark, "cls": mark_class(mark), "filled": False})
-        for cls in sorted({mark_class(m) for m in clicks}):
-            balls = [m for m in clicks if mark_class(m) == cls]
-            out.extend(fill_gaps(clip, cls, rows, balls))
-    return out
+def clicked_balls(marks):
+    """Ball marks with a clicked centre. Unmarked frames are never used."""
+    return [
+        {**m, "cls": mark_class(m)}
+        for m in marks
+        if m.get("kind") == "ball" and m.get("cx") is not None and m.get("cy") is not None
+    ]
 
 
-def fill_gaps(clip, cls, rows, balls):
-    out = []
-    for a, b in zip(balls, balls[1:]):
-        gap = b["index"] - a["index"]
-        if gap < 2 or gap > MAX_GAP:
-            continue
-        if any(
-            m.get("kind") == "empty" and a["index"] < m["index"] < b["index"] for m in rows
-        ):
-            continue
-        for index in range(a["index"] + 1, b["index"]):
-            t = (index - a["index"]) / gap
-            out.append(
-                {
-                    "clip": clip,
-                    "index": index,
-                    "kind": "ball",
-                    "cls": cls,
-                    "cx": a["cx"] + (b["cx"] - a["cx"]) * t,
-                    "cy": a["cy"] + (b["cy"] - a["cy"]) * t,
-                    "filled": True,
-                }
-            )
-    return out
+def frame_rows(marks):
+    """Every ball on each marked frame, keyed (clip, index) in the order the
+    frame's first mark appears: balls, then frames marked empty."""
+    rows = {}
+    for m in clicked_balls(marks):
+        rows.setdefault((m["clip"], m["index"]), []).append((m["cls"], m["cx"], m["cy"]))
+    for m in marks:
+        if m.get("kind") == "empty":
+            rows.setdefault((m["clip"], m["index"]), [])
+    return rows
+
+
+def split_by_clip(items):
+    """Every fifth clip to validation, whole, so no validation frame has a
+    near-identical neighbour in training. One clip gives its first frame."""
+    clips = list(dict.fromkeys((item["source"], item["clip"]) for item in items))
+    val_clips = set(clips[::VAL_EVERY]) if len(clips) > 1 else set()
+    val = [item for item in items if (item["source"], item["clip"]) in val_clips]
+    train = [item for item in items if (item["source"], item["clip"]) not in val_clips]
+    if not val:
+        val = train[:1]
+    return train, val
 
 
 def self_test():
     marks = [
         {"clip": "0001", "index": 0, "kind": "ball", "cx": 0.0, "cy": 10.0},
         {"clip": "0001", "index": 4, "kind": "ball", "cx": 40.0, "cy": 10.0},
+        {"clip": "0001", "index": 2, "kind": "empty"},
     ]
-    filled = [m["index"] for m in interpolate(marks) if m["filled"]]
-    assert filled == [1, 2, 3], filled
-    mid = next(m for m in interpolate(marks) if m["index"] == 2)
-    assert abs(mid["cx"] - 20.0) < 1e-6
-    broken = marks + [{"clip": "0001", "index": 2, "kind": "empty"}]
-    assert all(not m["filled"] for m in interpolate(broken))
+    assert [m["index"] for m in clicked_balls(marks)] == [0, 4]
+    two = marks + [{"clip": "0001", "index": 4, "kind": "ball", "cx": 90.0, "cy": 5.0}]
+    rows = frame_rows(two)
+    assert rows[("0001", 4)] == [("ball", 40.0, 10.0), ("ball", 90.0, 5.0)], rows
+    assert rows[("0001", 2)] == []
+    items = [{"source": 0, "clip": c, "index": 0} for c in ["a", "b", "c", "d", "e", "f"]]
+    train, val = split_by_clip(items)
+    assert [i["clip"] for i in val] == ["a", "f"], val
+    assert len(train) == 4
+    one = [{"source": 0, "clip": "a", "index": k} for k in range(3)]
+    assert split_by_clip(one) == (one, one[:1])
     assert even_sample(list(range(100)), 4) == [0, 25, 50, 75]
     assert even_sample([3, 7], 40) == [3, 7]
     import tempfile
@@ -132,11 +128,10 @@ def write_split(root, name, items):
     for item in items:
         stem = f"s{item['source']}_{item['clip']}_{item['index']:05d}"
         item["image"].save(img_dir / f"{stem}.jpg")
-        text = ""
-        if item["kind"] == "ball":
-            text = yolo_line(
-                item["cls"], item["cx"], item["cy"], item["box"], item["width"], item["height"]
-            )
+        text = "".join(
+            yolo_line(cls, cx, cy, item["box"], item["width"], item["height"])
+            for cls, cx, cy in item["balls"]
+        )
         (lbl_dir / f"{stem}.txt").write_text(text)
 
 
@@ -153,21 +148,19 @@ def load_frame(clip_dir, index, width, height):
 
 
 def session_items(source, session, labels):
-    """Labelled frames of one data directory, and its count of ball clicks."""
+    """Labelled frames of one data directory."""
     box = int(labels.get("box_px") or labels.get("box") or 32)
     marks = labels.get("marks", [])
-    balls = interpolate(marks)
-    rows = balls + [m for m in marks if m.get("kind") == "empty"]
+    rows = frame_rows(marks)
     marked = {(m["clip"], m["index"]) for m in marks}
     for clip in labels.get("empty_clips", []):
         meta = json.loads((session / "clips" / clip / "meta.json").read_text())
         for index in empty_clip_frames(session / "clips" / clip, meta["frame_count"]):
             if (clip, index) not in marked:
-                rows.append({"clip": clip, "index": index, "kind": "empty"})
+                rows[(clip, index)] = []
     items = []
     metas = {}
-    for mark in rows:
-        clip = mark["clip"]
+    for (clip, index), balls in rows.items():
         if clip not in metas:
             metas[clip] = json.loads((session / "clips" / clip / "meta.json").read_text())
         meta = metas[clip]
@@ -175,42 +168,34 @@ def session_items(source, session, labels):
             {
                 "source": source,
                 "clip": clip,
-                "index": mark["index"],
-                "kind": mark["kind"],
-                "cls": mark_class(mark),
-                "cx": mark.get("cx"),
-                "cy": mark.get("cy"),
+                "index": index,
+                "kind": "ball" if balls else "empty",
+                "balls": balls,
                 "box": box,
                 "width": meta["width"],
                 "height": meta["height"],
-                "image": load_frame(
-                    session / "clips" / clip, mark["index"], meta["width"], meta["height"]
-                ),
+                "image": load_frame(session / "clips" / clip, index, meta["width"], meta["height"]),
             }
         )
-    return items, len([m for m in balls if not m["filled"]])
+    return items
 
 
 def build_dataset(sessions):
     """Merge every session's labels into <first session>/train/."""
     items = []
-    clicks = 0
     for source, session in enumerate(sessions):
         labels_path = session / "labels.json"
         if not labels_path.exists():
             raise SystemExit(f"no labels at {labels_path}; run task label first")
-        got, n = session_items(source, session, json.loads(labels_path.read_text()))
+        got = session_items(source, session, json.loads(labels_path.read_text()))
         empties = sum(1 for item in got if item["kind"] == "empty")
         print(f"{session}: {len(got) - empties} ball frames, {empties} empty frames")
         items.extend(got)
-        clicks += n
+    clicks = sum(len(item["balls"]) for item in items)
     if clicks < 8:
         raise SystemExit("need at least 8 ball clicks before training")
     items.sort(key=lambda item: (item["source"], item["clip"], item["index"]))
-    val = [item for i, item in enumerate(items) if i % 5 == 0]
-    train = [item for i, item in enumerate(items) if i % 5 != 0]
-    if not val:
-        val = train[:1]
+    train, val = split_by_clip(items)
     root = sessions[0] / "train"
     for generated in ("images", "labels"):
         shutil.rmtree(root / generated, ignore_errors=True)

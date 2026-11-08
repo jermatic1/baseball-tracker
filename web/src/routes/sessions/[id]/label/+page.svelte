@@ -12,7 +12,6 @@
 		kind: string;
 		cx: number;
 		cy: number;
-		filled?: boolean;
 	}
 	interface Point {
 		index: number;
@@ -54,7 +53,7 @@
 	let showKeys = $state(false);
 	const session = page.params.id === 'local' ? '' : page.params.id;
 
-	let balls = $derived(labels.filter((b) => b.kind === 'ball' && !b.filled).length);
+	let balls = $derived(labels.filter((b) => b.kind === 'ball').length);
 	let empties = $derived(labels.filter((b) => b.kind === 'empty').length);
 	let clipEmpty = $derived(clipId != null && emptyClips.has(clipId));
 
@@ -69,7 +68,7 @@
 		const size = Number(box) || 32;
 		for (const b of boxesFor(i)) {
 			ctx.strokeStyle = b.kind === 'ball' ? '#0f0' : '#f66';
-			ctx.lineWidth = b.filled ? 1 : 2;
+			ctx.lineWidth = 2;
 			if (b.kind === 'ball') {
 				ctx.strokeRect(b.cx - size / 2, b.cy - size / 2, size, size);
 			} else {
@@ -104,7 +103,16 @@
 			return;
 		}
 		await loadLabels();
-		await show(i + (Number(step) || 1));
+	}
+	const advance = (d: number) => show(i + d * (Number(step) || 1));
+	// Clicking a ball's box removes it; anywhere else adds a ball. The frame
+	// stays put either way.
+	function clickFrame(ev: MouseEvent) {
+		const p = imagePoint(ev);
+		const half = (Number(box) || 32) / 2;
+		const hit = boxesFor(i).find((b) => b.kind === 'ball' && Math.abs(b.cx - p.x) < half && Math.abs(b.cy - p.y) < half);
+		if (hit) save('clear', hit.cx, hit.cy);
+		else save('ball', p.x, p.y);
 	}
 	async function toggleEmptyClip() {
 		if (!clipId) return;
@@ -232,8 +240,8 @@
 		}
 		if (ev.key === 'n') save('empty', null, null);
 		if (ev.key === 'u') save('clear', null, null);
-		if (ev.key === 'ArrowLeft') show(i - 1);
-		if (ev.key === 'ArrowRight') show(i + 1);
+		if (ev.key === 'ArrowLeft') advance(-1);
+		if (ev.key === 'ArrowRight') advance(1);
 	}
 	// Key, then what it does, for the shortcut reference.
 	const KEYS: [string, string][] = [
@@ -244,9 +252,10 @@
 		['n / p', 'Next or previous clip'],
 		['e', 'No ball anywhere in this clip, then the next clip'],
 		['t', 'Switch between tracks and frames'],
-		['← / →', 'Previous or next frame'],
+		['← / →', 'Back or forward by Step frames'],
 		['n', 'No ball in this frame'],
-		['u', 'Undo this frame']
+		['u', 'Undo this frame'],
+		['click a box', 'Remove that ball']
 	];
 	const acceptMoving = () =>
 		review(
@@ -357,8 +366,8 @@
 		{:else}
 			<div class="mt-3 flex items-center gap-3">
 				<div class="join">
-					<button class="btn btn-square join-item" aria-label="previous frame" onclick={() => show(i - 1)}>‹</button>
-					<button class="btn btn-square join-item" aria-label="next frame" onclick={() => show(i + 1)}>›</button>
+					<button class="btn btn-square join-item" aria-label="previous frame" onclick={() => advance(-1)}>‹</button>
+					<button class="btn btn-square join-item" aria-label="next frame" onclick={() => advance(1)}>›</button>
 				</div>
 				<input type="range" min="0" max={Math.max(0, n - 1)} bind:value={i} oninput={() => show(Number(i))} class="range range-sm min-w-0 flex-1" />
 				<span class="text-sm whitespace-nowrap tabular-nums">{i} / {Math.max(0, n - 1)}</span>
@@ -374,7 +383,7 @@
 				<canvas
 					bind:this={canvas}
 					class="rounded-box block w-full cursor-crosshair bg-black"
-					onclick={(ev) => { const p = imagePoint(ev); save('ball', p.x, p.y); }}
+					onclick={clickFrame}
 					onmousemove={magnify}
 					onmouseleave={() => (zoomShown = false)}
 				></canvas>
@@ -385,7 +394,7 @@
 					class="rounded-field border-base-300 pointer-events-none absolute top-3 hidden border bg-black {zoomSide === 'right' ? 'right-3' : 'left-3'} {zoomShown ? 'pointer-fine:block' : ''}"
 				></canvas>
 			</div>
-			<p class="mt-3 text-sm opacity-70">Click the ball. Gaps of up to 12 frames fill in a straight line.</p>
+			<p class="mt-3 text-sm opacity-70">Click every ball fully in view, then step to the next frame. Click a box to remove it. Leave partly visible balls unmarked.</p>
 		{/if}
 	</section>
 </div>

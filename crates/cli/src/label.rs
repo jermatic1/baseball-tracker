@@ -14,8 +14,6 @@ use crate::error::AppError;
 use crate::jpeg::encode_gray_jpeg;
 use crate::label_tracks::{clip_tracks, Point};
 
-const MAX_GAP: usize = 12;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct Mark {
     clip: String,
@@ -58,16 +56,6 @@ impl Reviewed {
             && self.end == end
             && (self.cx - cx).hypot(self.cy - cy) < 1.0
     }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct Drawn {
-    clip: String,
-    index: usize,
-    kind: String,
-    cx: f64,
-    cy: f64,
-    filled: bool,
 }
 
 struct LabelState {
@@ -143,65 +131,6 @@ fn write_labels(path: &std::path::Path, labels: &LabelFile) -> Result<(), String
     fs::write(path, text).map_err(|e| e.to_string())
 }
 
-fn interpolate(marks: &[Mark]) -> Vec<Drawn> {
-    let mut out = Vec::new();
-    let mut clips: Vec<&str> = marks.iter().map(|m| m.clip.as_str()).collect();
-    clips.sort_unstable();
-    clips.dedup();
-    for clip in clips {
-        let mut rows: Vec<&Mark> = marks.iter().filter(|m| m.clip == clip).collect();
-        rows.sort_by_key(|m| m.index);
-        for mark in &rows {
-            if mark.kind == "ball" {
-                if let (Some(cx), Some(cy)) = (mark.cx, mark.cy) {
-                    out.push(Drawn {
-                        clip: clip.to_string(),
-                        index: mark.index,
-                        kind: "ball".into(),
-                        cx,
-                        cy,
-                        filled: false,
-                    });
-                }
-            }
-        }
-        for pair in rows.windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            if a.kind != "ball" || b.kind != "ball" {
-                continue;
-            }
-            let gap = b.index.saturating_sub(a.index);
-            if !(2..=MAX_GAP).contains(&gap) {
-                continue;
-            }
-            let blocked = rows
-                .iter()
-                .any(|m| m.kind == "empty" && m.index > a.index && m.index < b.index);
-            if blocked {
-                continue;
-            }
-            let (Some(ax), Some(ay)) = (a.cx, a.cy) else {
-                continue;
-            };
-            let (Some(bx), Some(by)) = (b.cx, b.cy) else {
-                continue;
-            };
-            for index in (a.index + 1)..b.index {
-                let t = (index - a.index) as f64 / gap as f64;
-                out.push(Drawn {
-                    clip: clip.to_string(),
-                    index,
-                    kind: "ball".into(),
-                    cx: ax + (bx - ax) * t,
-                    cy: ay + (by - ay) * t,
-                    filled: true,
-                });
-            }
-        }
-    }
-    out
-}
-
 async fn session_api(
     State(state): State<Arc<Mutex<LabelState>>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -249,21 +178,20 @@ async fn labels_api(
     State(state): State<Arc<Mutex<LabelState>>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let st = state.lock().map_err(|e| e.to_string())?;
-    let drawn = interpolate(&st.labels.marks);
-    let mut labels = Vec::new();
-    for mark in &st.labels.marks {
-        if mark.kind == "empty" {
-            labels.push(serde_json::json!({
-                "clip": mark.clip,
-                "index": mark.index,
-                "kind": "empty",
-                "filled": false,
-            }));
-        }
-    }
-    for box_ in drawn {
-        labels.push(serde_json::to_value(box_).map_err(|e| e.to_string())?);
-    }
+    let labels: Vec<serde_json::Value> = st
+        .labels
+        .marks
+        .iter()
+        .filter_map(|m| match (m.kind.as_str(), m.cx, m.cy) {
+            ("empty", _, _) => Some(serde_json::json!({
+                "clip": m.clip, "index": m.index, "kind": "empty",
+            })),
+            ("ball", Some(cx), Some(cy)) => Some(serde_json::json!({
+                "clip": m.clip, "index": m.index, "kind": "ball", "cx": cx, "cy": cy,
+            })),
+            _ => None,
+        })
+        .collect();
     Ok(Json(serde_json::json!({
         "box": st.labels.box_px,
         "labels": labels,
@@ -300,14 +228,31 @@ async fn save_label(
         cy: body.cy,
         cls: body.cls,
     };
-    put_mark(&mut st.labels.marks, mark);
+    let near = st.labels.box_px as f64 / 2.0;
+    put_mark(&mut st.labels.marks, mark, near);
     write_labels(&st.path, &st.labels)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-/// Replace the mark on the mark's frame; kind `clear` only removes.
-fn put_mark(marks: &mut Vec<Mark>, mark: Mark) {
-    marks.retain(|m| !(m.clip == mark.clip && m.index == mark.index));
+/// Put a mark on its frame. A frame holds any number of balls but never two
+/// of one class within `near` pixels, which are one object: a ball replaces
+/// the one it is near and any empty mark. `empty` replaces everything on the
+/// frame. `clear` removes the ball near its centre, or with no centre the
+/// frame.
+fn put_mark(marks: &mut Vec<Mark>, mark: Mark, near: f64) {
+    let class = |m: &Mark| m.cls.clone().unwrap_or_else(|| "ball".into());
+    let close = |m: &Mark| match (m.cx, m.cy, mark.cx, mark.cy) {
+        (Some(a), Some(b), Some(x), Some(y)) => {
+            class(m) == class(&mark) && (a - x).hypot(b - y) < near
+        }
+        _ => false,
+    };
+    let gone = |m: &Mark| match (mark.kind.as_str(), mark.cx.is_some()) {
+        ("ball", true) => m.kind != "ball" || close(m),
+        ("clear", true) => m.kind == "ball" && close(m),
+        _ => true,
+    };
+    marks.retain(|m| !(m.clip == mark.clip && m.index == mark.index && gone(m)));
     if mark.kind != "clear" {
         marks.push(mark);
     }
@@ -379,6 +324,7 @@ fn apply_review(labels: &mut LabelFile, body: ReviewBody) -> Result<(), String> 
         .reviewed_tracks
         .retain(|r| !r.matches(&key.clip, key.start, key.end, key.cx, key.cy));
     labels.reviewed_tracks.push(key);
+    let near = labels.box_px as f64 / 2.0;
     for p in &body.points {
         if body.verdict == "ball" {
             put_mark(
@@ -391,6 +337,7 @@ fn apply_review(labels: &mut LabelFile, body: ReviewBody) -> Result<(), String> 
                     cy: Some(p.cy),
                     cls: None,
                 },
+                near,
             );
         } else {
             labels.marks.retain(|m| {
@@ -457,28 +404,28 @@ mod tests {
     }
 
     #[test]
-    fn fills_a_short_gap() {
-        let drawn = interpolate(&[ball(0, 0.0), ball(4, 40.0)]);
-        let filled: Vec<_> = drawn.iter().filter(|d| d.filled).map(|d| d.index).collect();
-        assert_eq!(filled, vec![1, 2, 3]);
-        assert!((drawn.iter().find(|d| d.index == 2).unwrap().cx - 20.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn empty_breaks_the_span() {
-        let marks = vec![
-            ball(0, 0.0),
-            Mark {
-                clip: "0001".into(),
-                index: 2,
-                kind: "empty".into(),
-                cx: None,
-                cy: None,
-                cls: None,
-            },
-            ball(4, 40.0),
-        ];
-        assert!(interpolate(&marks).iter().all(|d| !d.filled));
+    fn a_frame_holds_several_balls_but_one_box_per_ball() {
+        let mut marks = vec![ball(3, 100.0)];
+        put_mark(&mut marks, ball(3, 300.0), 16.0);
+        put_mark(&mut marks, ball(3, 305.0), 16.0);
+        let xs: Vec<_> = marks.iter().map(|m| m.cx).collect();
+        assert_eq!(xs, [Some(100.0), Some(305.0)]);
+        let clear = Mark {
+            kind: "clear".into(),
+            ..ball(3, 98.0)
+        };
+        put_mark(&mut marks, clear, 16.0);
+        assert_eq!(marks, [ball(3, 305.0)]);
+        let empty = Mark {
+            kind: "empty".into(),
+            cx: None,
+            cy: None,
+            ..ball(3, 0.0)
+        };
+        put_mark(&mut marks, empty.clone(), 16.0);
+        assert_eq!(marks, [empty]);
+        put_mark(&mut marks, ball(3, 50.0), 16.0);
+        assert_eq!(marks, [ball(3, 50.0)]);
     }
 
     #[test]

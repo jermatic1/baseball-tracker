@@ -1,14 +1,14 @@
 //! The YOLO dataset built from labelled sessions, laid out and sampled as
 //! `tools/train.py` builds it, so a dataset made here trains the same:
-//! clicked balls plus straight-line fills between them, frames marked empty,
-//! and a few frames from each clip marked as having no ball.
+//! clicked balls, frames marked empty, and a few frames from each clip
+//! marked as having no ball. Only frames someone marked are used.
 //!
-//! Sessions marked `include` give `train/` (every fifth frame to `val`);
+//! Sessions marked `include` give `train/` (every fifth clip to `val`);
 //! those marked `holdout` give `holdout/`, which training never sees. The
 //! archive sent to the training server is both, a `manifest.json`, and the
 //! running model as `current.onnx`.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -20,13 +20,12 @@ use crate::session_meta::{SessionMeta, Training, SESSION_FILE};
 use crate::TrackerError;
 
 pub const CLASSES: [&str; 1] = ["ball"];
-/// Longest run of frames filled between two clicks of one class.
-pub const MAX_GAP: usize = 12;
 pub const EMPTY_CLIP_STRIDE: usize = 10;
 pub const EMPTY_CLIP_CAP: usize = 2;
 pub const DEFAULT_BOX_PX: u32 = 32;
 pub const MIN_CLICKS: usize = 8;
-/// Every fifth frame, counting from the first, is validation.
+/// Every fifth clip, counting from the first, is validation, so no frame in
+/// it has a near-identical neighbour in training.
 pub const VAL_EVERY: usize = 5;
 /// The id of the folder where clips with no session go.
 pub const NO_SESSION: &str = "none";
@@ -53,12 +52,10 @@ pub struct Chosen {
 /// What one session adds to a dataset.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Counts {
-    /// Frames with a ball box, clicked or filled.
+    /// Frames with a clicked ball.
     pub ball: usize,
     /// Frames with no ball.
     pub empty: usize,
-    /// Boxes the user placed, not filled.
-    pub clicks: usize,
 }
 
 /// Frames written to each part of a dataset.
@@ -126,26 +123,17 @@ struct DetRow {
     balls: Vec<IgnoredAny>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct Ball {
-    clip: String,
-    index: usize,
-    cls: String,
-    cx: f64,
-    cy: f64,
-    filled: bool,
-}
-
 /// A ball box's class and centre in pixels.
 type BallAt = (String, f64, f64);
 
-/// One frame of the dataset; `ball` is `None` for a frame with no ball.
+/// One frame of the dataset and every ball on it; none for a frame with no
+/// ball.
 #[derive(Debug, Clone, PartialEq)]
 struct Item {
     source: usize,
     clip: String,
     index: usize,
-    ball: Option<BallAt>,
+    balls: Vec<BallAt>,
     box_px: u32,
     width: u32,
     height: u32,
@@ -199,82 +187,12 @@ pub fn session_counts(dir: &Path) -> Result<Counts, TrackerError> {
     if !dir.join("labels.json").exists() {
         return Ok(Counts::default());
     }
-    let (items, clicks) = session_items(0, dir)?;
-    let ball = items.iter().filter(|i| i.ball.is_some()).count();
+    let items = session_items(0, dir)?;
+    let ball = items.iter().filter(|i| !i.balls.is_empty()).count();
     Ok(Counts {
         ball,
         empty: items.len() - ball,
-        clicks,
     })
-}
-
-/// Clicked boxes plus straight-line fills between clicks of one class.
-fn interpolate(marks: &[Mark]) -> Vec<Ball> {
-    let mut clips: Vec<(&str, Vec<&Mark>)> = Vec::new();
-    for mark in marks {
-        match clips.iter_mut().find(|(clip, _)| *clip == mark.clip) {
-            Some((_, rows)) => rows.push(mark),
-            None => clips.push((&mark.clip, vec![mark])),
-        }
-    }
-    let mut out = Vec::new();
-    for (clip, mut rows) in clips {
-        rows.sort_by_key(|m| m.index);
-        let clicks: Vec<&Mark> = rows
-            .iter()
-            .copied()
-            .filter(|m| m.is("ball") && m.cx.is_some() && m.cy.is_some())
-            .collect();
-        for mark in &clicks {
-            out.push(Ball {
-                clip: clip.to_string(),
-                index: mark.index,
-                cls: mark.class().to_string(),
-                cx: mark.cx.unwrap_or_default(),
-                cy: mark.cy.unwrap_or_default(),
-                filled: false,
-            });
-        }
-        let classes: BTreeSet<&str> = clicks.iter().map(|m| m.class()).collect();
-        for cls in classes {
-            let balls: Vec<&Mark> = clicks
-                .iter()
-                .copied()
-                .filter(|m| m.class() == cls)
-                .collect();
-            fill_gaps(clip, cls, &rows, &balls, &mut out);
-        }
-    }
-    out
-}
-
-fn fill_gaps(clip: &str, cls: &str, rows: &[&Mark], balls: &[&Mark], out: &mut Vec<Ball>) {
-    for pair in balls.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        let gap = b.index - a.index;
-        if !(2..=MAX_GAP).contains(&gap) {
-            continue;
-        }
-        if rows
-            .iter()
-            .any(|m| m.is("empty") && a.index < m.index && m.index < b.index)
-        {
-            continue;
-        }
-        let (ax, ay) = (a.cx.unwrap_or_default(), a.cy.unwrap_or_default());
-        let (bx, by) = (b.cx.unwrap_or_default(), b.cy.unwrap_or_default());
-        for index in a.index + 1..b.index {
-            let t = (index - a.index) as f64 / gap as f64;
-            out.push(Ball {
-                clip: clip.to_string(),
-                index,
-                cls: cls.to_string(),
-                cx: ax + (bx - ax) * t,
-                cy: ay + (by - ay) * t,
-                filled: true,
-            });
-        }
-    }
 }
 
 /// `cap` items spread evenly over `items`, or all of them.
@@ -335,8 +253,8 @@ fn read_meta(session: &Path, clip: &str) -> Result<FrameMeta, TrackerError> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
 
-/// The labelled frames of one session, and its count of ball clicks.
-fn session_items(source: usize, session: &Path) -> Result<(Vec<Item>, usize), TrackerError> {
+/// The labelled frames of one session.
+fn session_items(source: usize, session: &Path) -> Result<Vec<Item>, TrackerError> {
     let path = session.join("labels.json");
     if !path.exists() {
         return Err(TrackerError::Other(format!(
@@ -350,19 +268,28 @@ fn session_items(source: usize, session: &Path) -> Result<(Vec<Item>, usize), Tr
         .filter(|&b| b > 0)
         .or(labels.box_alias.filter(|&b| b > 0))
         .unwrap_or(DEFAULT_BOX_PX);
-    let balls = interpolate(&labels.marks);
-    let clicks = balls.iter().filter(|b| !b.filled).count();
-    let mut rows: Vec<(String, usize, Option<BallAt>)> = balls
-        .into_iter()
-        .map(|b| (b.clip, b.index, Some((b.cls, b.cx, b.cy))))
-        .collect();
-    rows.extend(
-        labels
-            .marks
-            .iter()
-            .filter(|m| m.is("empty"))
-            .map(|m| (m.clip.clone(), m.index, None)),
-    );
+    // One row per frame, in the order its first mark appears: balls, then
+    // frames marked empty.
+    let mut rows: Vec<(String, usize, Vec<BallAt>)> = Vec::new();
+    let mut row_of: HashMap<(String, usize), usize> = HashMap::new();
+    for m in &labels.marks {
+        let (true, Some(cx), Some(cy)) = (m.is("ball"), m.cx, m.cy) else {
+            continue;
+        };
+        let k = *row_of.entry((m.clip.clone(), m.index)).or_insert_with(|| {
+            rows.push((m.clip.clone(), m.index, Vec::new()));
+            rows.len() - 1
+        });
+        rows[k].2.push((m.class().to_string(), cx, cy));
+    }
+    for m in labels.marks.iter().filter(|m| m.is("empty")) {
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            row_of.entry((m.clip.clone(), m.index))
+        {
+            e.insert(rows.len());
+            rows.push((m.clip.clone(), m.index, Vec::new()));
+        }
+    }
     let marked: HashSet<(&str, usize)> = labels
         .marks
         .iter()
@@ -374,13 +301,13 @@ fn session_items(source: usize, session: &Path) -> Result<(Vec<Item>, usize), Tr
         let clip_dir = session.join("clips").join(clip);
         for index in empty_clip_frames(&clip_dir, meta.frame_count)? {
             if !marked.contains(&(clip.as_str(), index)) {
-                rows.push((clip.clone(), index, None));
+                rows.push((clip.clone(), index, Vec::new()));
             }
         }
         metas.insert(clip.clone(), meta);
     }
     let mut items = Vec::with_capacity(rows.len());
-    for (clip, index, ball) in rows {
+    for (clip, index, balls) in rows {
         if !metas.contains_key(&clip) {
             metas.insert(clip.clone(), read_meta(session, &clip)?);
         }
@@ -391,11 +318,11 @@ fn session_items(source: usize, session: &Path) -> Result<(Vec<Item>, usize), Tr
             height: meta.height,
             clip,
             index,
-            ball,
+            balls,
             box_px,
         });
     }
-    Ok((items, clicks))
+    Ok(items)
 }
 
 fn load_frame(session: &Path, item: &Item) -> Result<Vec<u8>, TrackerError> {
@@ -432,37 +359,43 @@ fn write_split(
         let raw = load_frame(&sessions[item.source].dir, item)?;
         let jpeg = encode(item.width, item.height, &raw).map_err(TrackerError::Other)?;
         fs::write(images.join(format!("{stem}.jpg")), jpeg)?;
-        let text = match &item.ball {
-            Some((cls, cx, cy)) => yolo_line(cls, *cx, *cy, item.box_px, item.width, item.height)?,
-            None => String::new(),
-        };
+        let text = item
+            .balls
+            .iter()
+            .map(|(cls, cx, cy)| yolo_line(cls, *cx, *cy, item.box_px, item.width, item.height))
+            .collect::<Result<String, _>>()?;
         fs::write(labels.join(format!("{stem}.txt")), text)?;
     }
     Ok(())
 }
 
-/// Every session's items in (session, clip, frame) order, and the clicks.
-fn gather(sessions: &[SessionRef]) -> Result<(Vec<Item>, usize), TrackerError> {
+/// Every session's items in (session, clip, frame) order.
+fn gather(sessions: &[SessionRef]) -> Result<Vec<Item>, TrackerError> {
     let mut items = Vec::new();
-    let mut clicks = 0;
     for (source, session) in sessions.iter().enumerate() {
-        let (got, n) = session_items(source, &session.dir)?;
-        items.extend(got);
-        clicks += n;
+        items.extend(session_items(source, &session.dir)?);
     }
     items.sort_by(|a, b| (a.source, &a.clip, a.index).cmp(&(b.source, &b.clip, b.index)));
-    Ok((items, clicks))
+    Ok(items)
 }
 
+/// Whole clips to validation, every `VAL_EVERY`th. With a single clip there
+/// is nothing to hold apart, so its first frame is validation.
 fn split(items: Vec<Item>) -> (Vec<Item>, Vec<Item>) {
-    let (mut val, mut train) = (Vec::new(), Vec::new());
-    for (i, item) in items.into_iter().enumerate() {
-        if i % VAL_EVERY == 0 {
-            val.push(item);
-        } else {
-            train.push(item);
-        }
-    }
+    let mut clips: Vec<(usize, &str)> = items.iter().map(|i| (i.source, i.clip.as_str())).collect();
+    clips.dedup();
+    let val_clips: HashSet<(usize, String)> = if clips.len() < 2 {
+        HashSet::new()
+    } else {
+        clips
+            .iter()
+            .step_by(VAL_EVERY)
+            .map(|&(s, c)| (s, c.to_string()))
+            .collect()
+    };
+    let (mut val, train): (Vec<Item>, Vec<Item>) = items
+        .into_iter()
+        .partition(|i| val_clips.contains(&(i.source, i.clip.clone())));
     if val.is_empty() {
         val.extend(train.first().cloned());
     }
@@ -472,7 +405,8 @@ fn split(items: Vec<Item>) -> (Vec<Item>, Vec<Item>) {
 /// Write `out/train/` from the included sessions and `out/holdout/` from the
 /// held-out ones.
 pub fn write_dataset(out: &Path, chosen: &Chosen, encode: Encode) -> Result<Built, TrackerError> {
-    let (items, clicks) = gather(&chosen.include)?;
+    let items = gather(&chosen.include)?;
+    let clicks: usize = items.iter().map(|i| i.balls.len()).sum();
     if clicks < MIN_CLICKS {
         return Err(TrackerError::Other(format!(
             "need at least {MIN_CLICKS} ball clicks before training; the included sessions have {clicks}"
@@ -503,7 +437,7 @@ pub fn write_dataset(out: &Path, chosen: &Chosen, encode: Encode) -> Result<Buil
         holdout: 0,
     };
     if !chosen.holdout.is_empty() {
-        let (held, _) = gather(&chosen.holdout)?;
+        let held = gather(&chosen.holdout)?;
         let dir = out.join("holdout");
         write_split(&dir, "", &held, &chosen.holdout, encode)?;
         built.holdout = held.len();
@@ -628,8 +562,8 @@ mod tests {
         }
     }
 
-    /// Clip 0001: clicks at 0 and 4 (filled 1..3), and 6 and 9 with an empty
-    /// mark at 7 between them (not filled). Clip 0002: clicks 0..=5 in a row.
+    /// Clip 0001: clicks at 0, 4, 6 and 9 with an empty mark at 7. Clip 0002:
+    /// clicks 0..=5 in a row and a second ball on 2.
     /// Clip 0003 is empty with the detector firing on 1, 3, 5, 7; clip 0004 is
     /// empty with no detections and an empty mark on frame 10.
     fn session(dir: &Path) {
@@ -648,6 +582,7 @@ mod tests {
         for k in 0..6 {
             marks.push(serde_json::json!({"clip": "0002", "index": k, "kind": "ball", "cx": 320.0 + k as f64, "cy": 5.0, "cls": "ball"}));
         }
+        marks.push(serde_json::json!({"clip": "0002", "index": 2, "kind": "ball", "cx": 64.0, "cy": 100.0}));
         let labels =
             serde_json::json!({"box_px": 24, "marks": marks, "empty_clips": ["0003", "0004"]});
         fs::write(dir.join("labels.json"), labels.to_string()).unwrap();
@@ -667,27 +602,22 @@ mod tests {
     }
 
     #[test]
-    fn interpolation_and_sampling_follow_train_py() {
+    fn only_marked_frames_and_sampled_empty_clips_are_items() {
         let dir = temp("items");
         session(&dir);
-        let (items, clicks) = session_items(0, &dir).unwrap();
-        assert_eq!(clicks, 10);
+        let items = session_items(0, &dir).unwrap();
         let ball: Vec<(&str, usize)> = items
             .iter()
-            .filter(|i| i.ball.is_some())
+            .filter(|i| !i.balls.is_empty())
             .map(|i| (i.clip.as_str(), i.index))
             .collect();
         assert_eq!(
             ball,
             [
-                ("0001", 0),
                 ("0001", 4),
+                ("0001", 0),
                 ("0001", 6),
                 ("0001", 9),
-                ("0001", 1),
-                ("0001", 2),
-                ("0001", 3),
-                ("0001", 5),
                 ("0002", 0),
                 ("0002", 1),
                 ("0002", 2),
@@ -698,7 +628,7 @@ mod tests {
         );
         let empty: Vec<(&str, usize)> = items
             .iter()
-            .filter(|i| i.ball.is_none())
+            .filter(|i| i.balls.is_empty())
             .map(|i| (i.clip.as_str(), i.index))
             .collect();
         // Detector frames 1 and 5 of 0003; every tenth of 0004 but the marked 10.
@@ -714,14 +644,7 @@ mod tests {
         );
         assert_eq!(even_sample((0..100).collect(), 4), [0, 25, 50, 75]);
         assert_eq!(even_sample(vec![3, 7], 40), [3, 7]);
-        assert_eq!(
-            session_counts(&dir).unwrap(),
-            Counts {
-                ball: 14,
-                empty: 5,
-                clicks: 10
-            }
-        );
+        assert_eq!(session_counts(&dir).unwrap(), Counts { ball: 10, empty: 5 });
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -746,88 +669,34 @@ mod tests {
         assert_eq!(
             built,
             Built {
-                train: 15,
-                val: 4,
-                holdout: 19
+                train: 10,
+                val: 5,
+                holdout: 15
             }
         );
-        // Printed by train.py's build_dataset on this session.
+        // Printed by train.py's build_dataset on this session. Clip 0001,
+        // the first of four, is validation whole.
+        let ball = |x: &str, y: &str| format!("0 {x} {y} 0.037500 0.060000\n");
         let want = [
-            (
-                "train",
-                "s0_0001_00001",
-                "0 0.015625 0.025000 0.037500 0.060000\n",
-            ),
-            (
-                "train",
-                "s0_0001_00002",
-                "0 0.031250 0.025000 0.037500 0.060000\n",
-            ),
-            (
-                "train",
-                "s0_0001_00003",
-                "0 0.046875 0.025000 0.037500 0.060000\n",
-            ),
-            (
-                "train",
-                "s0_0001_00004",
-                "0 0.062500 0.025000 0.037500 0.060000\n",
-            ),
-            (
-                "train",
-                "s0_0001_00006",
-                "0 0.157031 0.500625 0.037500 0.060000\n",
-            ),
-            ("train", "s0_0001_00007", ""),
-            (
-                "train",
-                "s0_0001_00009",
-                "0 0.203125 0.525000 0.037500 0.060000\n",
-            ),
-            (
-                "train",
-                "s0_0002_00000",
-                "0 0.500000 0.012500 0.037500 0.060000\n",
-            ),
+            ("train", "s0_0002_00000", ball("0.500000", "0.012500")),
+            ("train", "s0_0002_00001", ball("0.501563", "0.012500")),
             (
                 "train",
                 "s0_0002_00002",
-                "0 0.503125 0.012500 0.037500 0.060000\n",
+                ball("0.503125", "0.012500") + &ball("0.100000", "0.250000"),
             ),
-            (
-                "train",
-                "s0_0002_00003",
-                "0 0.504687 0.012500 0.037500 0.060000\n",
-            ),
-            (
-                "train",
-                "s0_0002_00004",
-                "0 0.506250 0.012500 0.037500 0.060000\n",
-            ),
-            (
-                "train",
-                "s0_0002_00005",
-                "0 0.507812 0.012500 0.037500 0.060000\n",
-            ),
-            ("train", "s0_0003_00005", ""),
-            ("train", "s0_0004_00000", ""),
-            ("train", "s0_0004_00010", ""),
-            (
-                "val",
-                "s0_0001_00000",
-                "0 0.000000 0.025000 0.037500 0.060000\n",
-            ),
-            (
-                "val",
-                "s0_0001_00005",
-                "0 0.109766 0.262813 0.037500 0.060000\n",
-            ),
-            (
-                "val",
-                "s0_0002_00001",
-                "0 0.501563 0.012500 0.037500 0.060000\n",
-            ),
-            ("val", "s0_0003_00001", ""),
+            ("train", "s0_0002_00003", ball("0.504687", "0.012500")),
+            ("train", "s0_0002_00004", ball("0.506250", "0.012500")),
+            ("train", "s0_0002_00005", ball("0.507812", "0.012500")),
+            ("train", "s0_0003_00001", String::new()),
+            ("train", "s0_0003_00005", String::new()),
+            ("train", "s0_0004_00000", String::new()),
+            ("train", "s0_0004_00010", String::new()),
+            ("val", "s0_0001_00000", ball("0.000000", "0.025000")),
+            ("val", "s0_0001_00004", ball("0.062500", "0.025000")),
+            ("val", "s0_0001_00006", ball("0.157031", "0.500625")),
+            ("val", "s0_0001_00007", String::new()),
+            ("val", "s0_0001_00009", ball("0.203125", "0.525000")),
         ];
         let mut got = Vec::new();
         for split in ["train", "val"] {
@@ -838,16 +707,16 @@ mod tests {
             }
         }
         let want: Vec<_> = want
-            .iter()
-            .map(|(split, stem, text)| (*split, stem.to_string(), text.to_string()))
+            .into_iter()
+            .map(|(split, stem, text)| (split, stem.to_string(), text))
             .collect();
         assert_eq!(got, want);
         let read = |p: &str| fs::read_to_string(out.join(p)).unwrap();
         assert_eq!(
-            fs::read(out.join("train/images/train/s0_0001_00002.jpg")).unwrap(),
-            [2]
+            fs::read(out.join("train/images/val/s0_0001_00004.jpg")).unwrap(),
+            [4]
         );
-        assert_eq!(stems(&out.join("holdout/labels")).len(), 19);
+        assert_eq!(stems(&out.join("holdout/labels")).len(), 15);
         assert!(read("train/data.yaml")
             .ends_with("train: images/train\nval: images/val\nnames:\n  0: ball\n"));
         fs::remove_dir_all(&root).unwrap();

@@ -8,7 +8,6 @@
 		id: string;
 		ball: number;
 		empty: number;
-		clicks: number;
 		error?: string;
 	}
 	interface Result {
@@ -91,7 +90,7 @@
 		if (Math.abs(d) < 0.0005) return ['same', 'opacity-60'];
 		return [`${d > 0 ? '+' : ''}${d.toFixed(3)}`, (d > 0) === up ? 'text-success' : 'text-error'];
 	}
-	const total = (list: SessionRow[], key: 'ball' | 'empty' | 'clicks') =>
+	const total = (list: SessionRow[], key: 'ball' | 'empty') =>
 		list.reduce((n, s) => n + (s.error ? 0 : s[key]), 0);
 
 	function showJob(j: Job) {
@@ -156,7 +155,7 @@
 		{#if list.length}
 			<table class="table">
 				<thead>
-					<tr><th>Session</th><th class="text-right">Ball frames</th><th class="text-right">Empty frames</th><th class="text-right">Clicks</th></tr>
+					<tr><th>Session</th><th class="text-right">Ball frames</th><th class="text-right">Empty frames</th></tr>
 				</thead>
 				<tbody class="tabular-nums">
 					{#each list as s (s.id)}
@@ -166,16 +165,16 @@
 								{#if trained.includes(s.id)}<span class="badge badge-soft badge-success badge-sm ml-2">in the live model</span>{/if}
 							</td>
 							{#if s.error}
-								<td class="text-error" colspan="3">{s.error}</td>
+								<td class="text-error" colspan="2">{s.error}</td>
 							{:else}
-								<td class="text-right">{s.ball}</td><td class="text-right">{s.empty}</td><td class="text-right">{s.clicks}</td>
+								<td class="text-right">{s.ball}</td><td class="text-right">{s.empty}</td>
 							{/if}
 						</tr>
 					{/each}
 				</tbody>
 				{#if list.length > 1}
 					<tfoot class="tabular-nums">
-						<tr><th>Total</th><th class="text-right">{total(list, 'ball')}</th><th class="text-right">{total(list, 'empty')}</th><th class="text-right">{total(list, 'clicks')}</th></tr>
+						<tr><th>Total</th><th class="text-right">{total(list, 'ball')}</th><th class="text-right">{total(list, 'empty')}</th></tr>
 					</tfoot>
 				{/if}
 			</table>
