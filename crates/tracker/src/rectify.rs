@@ -5,9 +5,11 @@
 //! them lines the rows up and removes the fixed disparity offset the raw
 //! frames show, so point depth needs no hand calibration.
 
+use std::ops::Range;
+
 use serde_json::Value;
 
-use crate::stereo::{stereo_baseline_m, StereoCalib};
+use crate::stereo::{self, stereo_baseline_m, StereoCalib};
 use crate::TrackerError;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -106,13 +108,39 @@ impl Rectifier {
     }
 
     pub fn rectify(&self, raw: &[u8], eye: Eye) -> Vec<u8> {
+        self.rectify_rows(raw, eye, 0..self.height)
+    }
+
+    /// Only `rows` of the rectified image, full width.
+    pub fn rectify_rows(&self, raw: &[u8], eye: Eye, rows: Range<u32>) -> Vec<u8> {
         let map = match eye {
             Eye::Left => &self.map_left,
             Eye::Right => &self.map_right,
         };
-        map.iter()
+        let w = self.width as usize;
+        let end = rows.end.min(self.height) as usize;
+        let start = (rows.start as usize).min(end);
+        map[start * w..end * w]
+            .iter()
             .map(|&(x, y)| sample_bilinear(raw, self.width, self.height, x, y))
             .collect()
+    }
+
+    /// Depth at a rectified left-eye point from the raw pair, rectifying only
+    /// the strip of rows the match reads: far cheaper than whole frames.
+    pub fn depth_at(
+        &self,
+        left: &[u8],
+        right: &[u8],
+        cx: f64,
+        cy: f64,
+        calib: StereoCalib,
+    ) -> Option<f64> {
+        let rows = stereo::match_rows(cy, self.height);
+        let l = self.rectify_rows(left, Eye::Left, rows.clone());
+        let r = self.rectify_rows(right, Eye::Right, rows.clone());
+        let y0 = rows.start;
+        stereo::depth_at(&l, &r, self.width, rows.end - y0, cx, cy - y0 as f64, calib)
     }
 
     /// Where a raw left-eye pixel lands in the rectified left image.
@@ -379,6 +407,24 @@ mod tests {
             "disparity {} vs {expected}",
             cl - cr
         );
+        let rows = 150..170;
+        let w = w as usize;
+        assert_eq!(
+            rect.rectify_rows(&right, Eye::Right, rows.clone()),
+            rr[rows.start as usize * w..rows.end as usize * w]
+        );
+        assert!(
+            stereo::depth_at(&rl, &rr, w as u32, h, cl, dl, rect.calib()).is_some(),
+            "the disc is matched"
+        );
+        for (x, y) in [(cl, dl), (cl + 7.3, dl - 4.6), (cl, 3.0), (cl, 396.0)] {
+            let full = stereo::depth_at(&rl, &rr, w as u32, h, x, y, rect.calib());
+            assert_eq!(
+                rect.depth_at(&left, &right, x, y, rect.calib()),
+                full,
+                "at ({x}, {y})"
+            );
+        }
         let (mu, mv) = rect.to_rectified_left(ul, vl);
         assert!(
             (mu - cl).abs() < 0.7 && (mv - dl).abs() < 0.7,

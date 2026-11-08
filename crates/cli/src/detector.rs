@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use image::{DynamicImage, GrayImage};
-use tracker::{BallBox, Eye, Rectifier, StereoCalib};
+use tracker::{BallBox, Rectifier, StereoCalib};
 use ultralytics_inference::{InferenceConfig, Quantization, YOLOModel};
 
 pub struct Detector {
@@ -157,16 +157,6 @@ impl Detector {
         if raw.is_empty() {
             return Ok(Vec::new());
         }
-        // Rectify only when there is something to measure: most frames have
-        // no ball, and the remap would cost more than the detector itself.
-        let pair = match (frame.rectifier, frame.right) {
-            (Some(r), Some(right)) => Some((
-                r.rectify(frame.left, Eye::Left),
-                r.rectify(right, Eye::Right),
-            )),
-            (None, Some(right)) => Some((frame.left.to_vec(), right.to_vec())),
-            _ => None,
-        };
         Ok(raw
             .into_iter()
             .map(|(x1, y1, x2, y2, conf)| {
@@ -175,9 +165,14 @@ impl Detector {
                     Some(r) => r.to_rectified_left(cx, cy),
                     None => (cx, cy),
                 };
-                let precise = pair
-                    .as_ref()
-                    .and_then(|(l, r)| tracker::stereo::depth_at(l, r, w, h, cx, cy, frame.calib));
+                // Rectify only the rows the match reads, not whole frames.
+                let precise = match (frame.rectifier, frame.right) {
+                    (Some(r), Some(right)) => r.depth_at(frame.left, right, cx, cy, frame.calib),
+                    (None, Some(right)) => {
+                        tracker::stereo::depth_at(frame.left, right, w, h, cx, cy, frame.calib)
+                    }
+                    _ => None,
+                };
                 BallBox {
                     x: x1,
                     y: y1,

@@ -42,6 +42,20 @@ impl StereoCalib {
     }
 }
 
+/// Half-size of the matching window, and the vertical search for eye
+/// misalignment, in pixels.
+const WIN: i32 = 5;
+const DY: i32 = 2;
+
+/// The rows `depth_at` reads around `cy` in an image `h` rows tall.
+pub fn match_rows(cy: f64, h: u32) -> std::ops::Range<u32> {
+    let y = cy.round() as i64;
+    let reach = (WIN + DY + 1) as i64;
+    let start = (y - reach).clamp(0, h as i64) as u32;
+    let end = (y + reach + 1).clamp(0, h as i64) as u32;
+    start..end
+}
+
 /// Full-resolution depth of one point, matched in a window around it with a
 /// small vertical search for eye misalignment. Used for detected balls, where
 /// the coarse depth file is too quantized.
@@ -54,8 +68,6 @@ pub fn depth_at(
     cy: f64,
     calib: StereoCalib,
 ) -> Option<f64> {
-    const WIN: i32 = 5;
-    const DY: i32 = 2;
     const MAX_D: i32 = 120;
     let n = (w as usize) * (h as usize);
     if left.len() < n || right.len() < n {
