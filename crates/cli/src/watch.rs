@@ -20,8 +20,9 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tracker::{
-    ball_position, process_clip, Activity, ClipMeta, ClipWriter, DataDir, Detections, Episode,
-    Intrinsics, Rectifier, StereoCalib, StoredFrame, WatchConfig, WatchState, Watcher,
+    ball_position, process_clip, watch::box_changed, Activity, ClipMeta, ClipWriter, DataDir,
+    Detections, Episode, Intrinsics, Rectifier, StereoCalib, StoredFrame, WatchConfig, WatchState,
+    Watcher,
 };
 
 use crate::capture::server::{self, LiveTap};
@@ -37,6 +38,9 @@ use crate::standby::{Engine, OnDemand, Open};
 const QUEUE: usize = 300;
 /// How often the detector thread checks for engine changes with no frames.
 const ENGINE_POLL: Duration = Duration::from_millis(200);
+/// How many frames back a detection's pixels are compared, to tell a
+/// moving ball from something fixed that the detector keeps finding.
+const CHANGE_FRAMES: usize = 3;
 
 /// Where a window's clip goes and the session it belongs to, fixed when
 /// the window opens.
@@ -323,7 +327,7 @@ fn detect_loop(
     let mut up: Option<StereoCalib> = None;
     let mut watcher = Watcher::new(cfg.clone());
     let mut ring: VecDeque<(usize, Arc<StoredFrame>)> = VecDeque::new();
-    let preroll_ns = (cfg.preroll * 1e9) as u64;
+    let cage = session.config.cage.clone();
     let mut writer: Option<ClipWriter> = None;
     let mut target: Option<Target> = None;
     let mut index = 0usize;
@@ -465,15 +469,29 @@ fn detect_loop(
                 position: ball_position(b, &intr, &mount),
             })
             .collect();
+        let before = ring
+            .iter()
+            .rev()
+            .find(|(i, _)| *i + CHANGE_FRAMES <= index)
+            .map(|(_, f)| f);
+        let can_move: Vec<bool> = balls
+            .iter()
+            .map(|b| {
+                !tracker::outside_cage(b, &intr, &mount, &cage)
+                    && before.is_none_or(|f| {
+                        box_changed(&frame.left, &f.left, frame.width, frame.height, b)
+                    })
+            })
+            .collect();
         let was_open = watcher.state() == WatchState::Episode;
-        let episode = watcher.observe(index, frame.t_ns, balls);
+        let episode = watcher.observe_gated(index, frame.t_ns, balls, &can_move);
         stages.mark("watch");
         if !was_open && watcher.state() == WatchState::Episode {
             target = Some(Target::now(&hub));
             stages.mark("open episode");
         }
         ring.push_back((index, Arc::clone(&frame)));
-        let cutoff = frame.t_ns.saturating_sub(preroll_ns);
+        let cutoff = frame.t_ns.saturating_sub(watcher.keep_ns());
         while ring.front().is_some_and(|(_, f)| f.t_ns < cutoff) {
             ring.pop_front();
         }

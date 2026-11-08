@@ -23,8 +23,8 @@ pub use clips::{
     EventKind, HitFlight, HitRecord, HitType, Landing, Location, PitchPlate, StoredFrame,
 };
 pub use config::{
-    CaptureConfig, Config, FlightConfig, MountConfig, PitchingConfig, TrainingConfig, WatchConfig,
-    ZoneConfig,
+    CageConfig, CaptureConfig, Config, FlightConfig, MountConfig, PitchingConfig, TrainingConfig,
+    WatchConfig, ZoneConfig,
 };
 pub use game::Game;
 pub use geom::{fit_samples, fit_trajectory, HitEstimate, Intrinsics, Sample, Trajectory};
@@ -73,6 +73,7 @@ pub fn process_clip(
     activity: Option<Activity>,
 ) -> Vec<HitRecord> {
     let pitching = cfg.pitching.for_activity(activity);
+    let frames = &inside_cage(frames, intr, cfg);
     let params = MotionParams::default();
     let default_depth = metres(cfg.mount.distance);
     let tracks = track_balls(frames, tracker_config(intr.fx, default_depth, &params));
@@ -279,6 +280,38 @@ pub fn ball_position(ball: &BallBox, intr: &Intrinsics, mount: &MountConfig) -> 
     Some([inches(x), inches(y), inches(PLATE_FRONT_M - z)])
 }
 
+/// Feet past the cage's side a ball may seem to be, for stereo depth error.
+const CAGE_MARGIN_FT: f64 = 1.0;
+
+/// Whether a ball's measured position is past the side of the cage, where
+/// only reflections and lights are. A ball with no depth is never outside.
+pub fn outside_cage(
+    ball: &BallBox,
+    intr: &Intrinsics,
+    mount: &MountConfig,
+    cage: &CageConfig,
+) -> bool {
+    let (Some(width), Some([x, _, _])) = (cage.width, ball_position(ball, intr, mount)) else {
+        return false;
+    };
+    x.abs() / 12.0 > width / 2.0 + CAGE_MARGIN_FT
+}
+
+fn inside_cage(frames: &[DetFrame], intr: &Intrinsics, cfg: &Config) -> Vec<DetFrame> {
+    frames
+        .iter()
+        .map(|f| DetFrame {
+            balls: f
+                .balls
+                .iter()
+                .filter(|b| !outside_cage(b, intr, &cfg.mount, &cfg.cage))
+                .copied()
+                .collect(),
+            ..f.clone()
+        })
+        .collect()
+}
+
 fn speed(v: [f64; 3]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
@@ -290,23 +323,36 @@ const FIT_SEED: usize = 4;
 
 /// Fit the free-flight prefix: grow the fit one sample at a time and stop at
 /// the first sample that leaves the predicted path. Returns the fit and how
-/// many samples it used.
+/// many samples it used, or none when there are too few samples to check a
+/// fit or the first ones do not lie on one flight, as false detections
+/// strung into a track do not.
 fn fit_free_flight(samples: &[Sample]) -> Option<(Trajectory, usize)> {
     let mut ordered = samples.to_vec();
     ordered.sort_by_key(|s| s.t_ns);
-    let mut n = ordered.len().min(FIT_SEED);
+    if ordered.len() < FIT_SEED {
+        return None;
+    }
+    let mut n = FIT_SEED;
     let mut traj = fit_trajectory(&ordered[..n])?;
+    if ordered[..n]
+        .iter()
+        .any(|s| residual(&traj, s) > FIT_RESIDUAL_M)
+    {
+        return None;
+    }
     while n < ordered.len() {
-        let s = &ordered[n];
-        let p = traj.at(s.t_ns);
-        let residual = ((p[0] - s.x).powi(2) + (p[1] - s.y).powi(2) + (p[2] - s.z).powi(2)).sqrt();
-        if residual > FIT_RESIDUAL_M {
+        if residual(&traj, &ordered[n]) > FIT_RESIDUAL_M {
             break;
         }
         n += 1;
         traj = fit_trajectory(&ordered[..n])?;
     }
     Some((traj, n))
+}
+
+fn residual(traj: &Trajectory, s: &Sample) -> f64 {
+    let p = traj.at(s.t_ns);
+    ((p[0] - s.x).powi(2) + (p[1] - s.y).powi(2) + (p[2] - s.z).powi(2)).sqrt()
 }
 
 fn sample(t_ns: u64, u: f64, v: f64, depth: f64, intr: &Intrinsics, cfg: &Config) -> Sample {
@@ -888,15 +934,32 @@ mod tests {
 
     #[test]
     fn watcher_catches_a_pitch_entering_the_image() {
-        let mut s = Synth::new(60);
+        // After the watcher's first tenth of a second, when it knows nothing.
+        let mut s = Synth::new(80);
         let vel = launch_velocity(45.0, 0.0, -100.0);
-        s.flight([1.2, 1.0, -0.6], vel, 0.0, 0..12, &[]);
+        s.flight([1.2, 1.0, -0.6], vel, 20.0 / SYNTH_FPS, 20..32, &[]);
         let eps = feed(&s, WatchConfig::default());
         assert_eq!(eps.len(), 1, "{eps:?}");
         assert_eq!(eps[0].first(), 0);
         let live = process_clip("0001", &eps[0].frames, &s.cfg, &s.intr, None);
         assert_eq!(live.len(), 1, "{live:?}");
         assert_eq!(live[0].kind, EventKind::Pitch);
+    }
+
+    #[test]
+    fn a_flight_past_the_cage_side_is_not_an_event() {
+        // Straight down the third-base side, 5 ft from the plate's centre.
+        let mut s = Synth::new(80);
+        s.flight(
+            [-1.5, 1.0, 1.0],
+            [0.0, 2.0, -15.0],
+            20.0 / SYNTH_FPS,
+            20..32,
+            &[],
+        );
+        assert_eq!(s.records().len(), 1);
+        s.cfg.cage.width = Some(6.0);
+        assert!(s.records().is_empty());
     }
 
     #[test]

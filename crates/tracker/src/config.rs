@@ -173,6 +173,15 @@ impl Default for DetectorConfig {
     }
 }
 
+/// The batting cage, feet. A ball measured past its sides is a reflection
+/// or a light beyond the net. No width keeps every ball.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CageConfig {
+    /// Inside width, centred on the plate.
+    #[serde(default)]
+    pub width: Option<f64>,
+}
+
 /// Where the Train page sends datasets. Empty means no server.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrainingConfig {
@@ -198,6 +207,8 @@ pub struct Config {
     pub zone: ZoneConfig,
     #[serde(default)]
     pub detector: DetectorConfig,
+    #[serde(default)]
+    pub cage: CageConfig,
     #[serde(default)]
     pub training: TrainingConfig,
 }
@@ -228,6 +239,7 @@ impl Config {
             flight: FlightConfig::default(),
             zone: ZoneConfig::default(),
             detector: DetectorConfig::default(),
+            cage: CageConfig::default(),
             training: TrainingConfig::default(),
         }
     }
