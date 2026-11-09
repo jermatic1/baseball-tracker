@@ -78,7 +78,6 @@ pub fn process_clip(
     let default_depth = metres(cfg.mount.distance);
     let tracks = track_balls(frames, tracker_config(intr.fx, default_depth, &params));
     let events = select_events(&tracks, frames, intr.fx, default_depth, &params);
-    let mut last_pitch_mph: std::collections::HashMap<u32, f64> = Default::default();
     let mut out = Vec::new();
     for ev in &events {
         let Some(track) = tracks.iter().find(|t| t.id == ev.track_id) else {
@@ -120,24 +119,9 @@ pub fn process_clip(
                 est = refined;
             }
         }
-        if kind == EventKind::Pitch {
-            last_pitch_mph.insert(ev.track_id, est.exit_velocity);
-        }
         if kind == EventKind::Hit && est.exit_velocity < cfg.tracking.min_hit_velocity {
             continue;
         }
-        let pivot = matches!(
-            ev.segment.anchor,
-            Some(Anchor {
-                kind: AnchorKind::Pivot,
-                ..
-            })
-        );
-        let pitch_velocity = if kind == EventKind::Hit && pivot {
-            last_pitch_mph.get(&ev.track_id).copied()
-        } else {
-            None
-        };
         // A sample the fit rejected is where the flight ended; the next
         // segment starting with an impact says the same when all fit.
         let impact_next = motion_segments(track, frames, &params)
@@ -165,7 +149,7 @@ pub fn process_clip(
             } else {
                 est.spray_angle
             },
-            pitch_velocity,
+            pitch_velocity: None,
             hit_type: (kind == EventKind::Hit).then(|| HitType::from_launch_deg(est.launch_angle)),
             contact,
             samples: est.samples,
@@ -173,6 +157,32 @@ pub fn process_clip(
             hit,
             pitch,
         });
+    }
+    pitches_into_hits(out)
+}
+
+/// One event per pitch: a hit carries the pitch before it in the window,
+/// its speed and plate crossing, in place of that pitch's own record. The
+/// window pairs them, so contact that hides the ball or breaks the track
+/// does not.
+fn pitches_into_hits(records: Vec<HitRecord>) -> Vec<HitRecord> {
+    let mut out: Vec<HitRecord> = Vec::with_capacity(records.len());
+    let mut unpaired: Option<usize> = None;
+    for mut r in records {
+        match r.kind {
+            EventKind::Pitch => unpaired = Some(out.len()),
+            EventKind::Hit => {
+                if let Some(pitch) = unpaired.take().map(|i| out.remove(i)) {
+                    r.pitch_velocity = Some(pitch.exit_velocity);
+                    r.pitch = pitch.pitch;
+                }
+            }
+            EventKind::Bounce => {}
+        }
+        out.push(r);
+    }
+    for (i, r) in out.iter_mut().enumerate() {
+        r.segment = i;
     }
     out
 }
@@ -616,10 +626,28 @@ mod tests {
         s.flight([1.2, 1.0, -0.6], pitch_vel, 0.0, 0..13, &[]);
         s.flight(pivot, hit_vel(), 12.0 / SYNTH_FPS, 13..24, &[]);
         let recs = s.records();
-        assert_eq!(recs.len(), 2, "{recs:?}");
-        assert_eq!(recs[0].kind, EventKind::Pitch);
-        assert_eq!(recs[1].kind, EventKind::Hit);
-        assert!((recs[1].exit_velocity - HIT_MPH).abs() < 1.0);
+        assert_eq!(recs.len(), 1, "one event for the pitch: {recs:?}");
+        assert_eq!(recs[0].kind, EventKind::Hit);
+        assert!((recs[0].exit_velocity - HIT_MPH).abs() < 1.0);
+        assert!((recs[0].pitch_velocity.unwrap() - 40.0).abs() < 1.0);
+        assert!(recs[0].pitch.is_some(), "the hit pitch is still called");
+    }
+
+    #[test]
+    fn hit_keeps_its_pitch_when_contact_is_hidden() {
+        let pitch_vel = launch_velocity(40.0, 0.0, -100.0);
+        let pivot = field_point([1.2, 1.0, -0.6], pitch_vel, 12.0 / SYNTH_FPS);
+        for hidden in [2, 5, 10] {
+            let skip: Vec<usize> = (13 - hidden / 2..13 + hidden - hidden / 2).collect();
+            let mut s = Synth::new(60);
+            s.flight([1.2, 1.0, -0.6], pitch_vel, 0.0, 0..13, &skip);
+            s.flight(pivot, hit_vel(), 12.0 / SYNTH_FPS, 13..60, &skip);
+            let recs = s.records();
+            assert_eq!(recs.len(), 1, "{hidden} frames hidden: {recs:?}");
+            assert_eq!(recs[0].kind, EventKind::Hit);
+            assert!((recs[0].pitch_velocity.unwrap() - 40.0).abs() < 1.0);
+            assert!(recs[0].pitch.is_some());
+        }
     }
 
     #[test]
@@ -633,10 +661,8 @@ mod tests {
         s.flight(toss_start, toss_vel, 0.0, 0..13, &[]);
         s.flight(pivot, hit, 12.0 / SYNTH_FPS, 13..30, &[]);
         let recs = s.records();
-        assert_eq!(recs.len(), 2, "{recs:?}");
-        assert_eq!(recs[0].kind, EventKind::Pitch);
-        assert!((recs[0].exit_velocity - 12.0).abs() < 1.0);
-        let hit = &recs[1];
+        assert_eq!(recs.len(), 1, "{recs:?}");
+        let hit = &recs[0];
         assert_eq!(hit.kind, EventKind::Hit);
         assert!((hit.pitch_velocity.unwrap() - 12.0).abs() < 1.0);
         assert!(
@@ -916,7 +942,7 @@ mod tests {
         assert_eq!(eps.len(), 1, "{eps:?}");
         let ep = &eps[0];
         assert_eq!(ep.first(), 80, "half a second of pre-roll before frame 130");
-        assert_eq!(ep.last(), 154, "settles 0.15 s after the last flight frame");
+        assert_eq!(ep.last(), 169, "settles 0.3 s after the last flight frame");
         let live = process_clip("0001", &ep.frames, &s.cfg, &s.intr, None);
         let batch = s.records();
         assert_eq!(live.len(), 1, "{live:?}");

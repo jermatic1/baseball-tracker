@@ -120,7 +120,8 @@ pub enum FitSource {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     Status(Status),
-    /// One measured record per hit, pitch, or bounce in a finished clip.
+    /// One measured record per pitch, hit, or bounce in a finished clip; a
+    /// pitch that is hit is its hit's record.
     Event {
         clip: String,
         record: HitRecord,

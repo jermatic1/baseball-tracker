@@ -23,10 +23,19 @@ fn max(values: impl Iterator<Item = f64>) -> Option<f64> {
     values.fold(None, |m, v| Some(m.map_or(v, |m: f64| m.max(v))))
 }
 
+/// Whether an event is a pitch: one taken, or one hit that carries it.
+fn is_pitch(e: &HitRecord) -> bool {
+    e.kind == EventKind::Pitch || e.pitch.is_some() || e.pitch_velocity.is_some()
+}
+
 /// The radar-gun number: release speed when the plate crossing was judged,
 /// else the speed where tracking began.
 fn pitch_speed(p: &HitRecord) -> f64 {
-    p.pitch.map_or(p.exit_velocity, |p| p.release_velocity)
+    let tracked = match p.kind {
+        EventKind::Pitch => p.exit_velocity,
+        _ => p.pitch_velocity.unwrap_or(p.exit_velocity),
+    };
+    p.pitch.map_or(tracked, |p| p.release_velocity)
 }
 
 fn mean(values: &[f64]) -> Option<f64> {
@@ -51,10 +60,7 @@ fn tenths(v: Option<f64>) -> Option<f64> {
 }
 
 pub fn session_stats(events: &[HitRecord]) -> SessionStats {
-    let pitches: Vec<&HitRecord> = events
-        .iter()
-        .filter(|e| e.kind == EventKind::Pitch)
-        .collect();
+    let pitches: Vec<&HitRecord> = events.iter().filter(|e| is_pitch(e)).collect();
     let hits: Vec<&HitRecord> = events.iter().filter(|e| e.kind == EventKind::Hit).collect();
     let pitch_speeds: Vec<f64> = pitches.iter().map(|p| pitch_speed(p)).collect();
     let exit_speeds: Vec<f64> = hits.iter().map(|h| h.exit_velocity).collect();
@@ -99,10 +105,7 @@ fn hitting(events: &[HitRecord]) -> Vec<SummaryLine> {
 }
 
 fn pitching(events: &[HitRecord]) -> Vec<SummaryLine> {
-    let pitches: Vec<&HitRecord> = events
-        .iter()
-        .filter(|e| e.kind == EventKind::Pitch)
-        .collect();
+    let pitches: Vec<&HitRecord> = events.iter().filter(|e| is_pitch(e)).collect();
     let speeds: Vec<f64> = pitches.iter().map(|p| pitch_speed(p)).collect();
     let mut out = vec![line("PITCHES", pitches.len().to_string())];
     let judged: Vec<Call> = pitches
@@ -225,6 +228,28 @@ mod tests {
                 ("AVG SPEED", "42 MPH"),
             ]
         );
+    }
+
+    #[test]
+    fn a_hit_pitch_counts_as_a_pitch() {
+        let mut struck = hit(70.0, 150.0);
+        struck.pitch_velocity = Some(41.0);
+        struck.pitch = pitch(46.0, Call::Strike).pitch;
+        let mut unjudged = hit(60.0, 120.0);
+        unjudged.pitch_velocity = Some(38.0);
+        let events = [pitch(40.0, Call::Ball), struck, unjudged, hit(50.0, 100.0)];
+        assert_eq!(
+            values(&summary_lines(Activity::Pitching, &events)),
+            vec![
+                ("PITCHES", "3"),
+                ("STRIKES", "50%"),
+                ("TOP SPEED", "46 MPH"),
+                ("AVG SPEED", "41 MPH"),
+            ]
+        );
+        let stats = session_stats(&events);
+        assert_eq!((stats.pitches, stats.strikes), (3, 1));
+        assert_eq!(stats.top_exit_mph, Some(70.0));
     }
 
     #[test]

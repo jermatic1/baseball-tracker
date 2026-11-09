@@ -29,6 +29,9 @@ pub struct TrackerConfig {
     pub max_jump_per_s: f64,
     /// Frames a track survives without a match.
     pub max_misses: usize,
+    /// Observations a track needs before it survives a missed frame, so a
+    /// stray pair of detections cannot widen its gate and take another ball.
+    pub tentative_hits: usize,
 }
 
 impl Default for TrackerConfig {
@@ -38,6 +41,7 @@ impl Default for TrackerConfig {
             gate_velocity_factor: 0.5,
             max_jump_per_s: 1000.0,
             max_misses: 3,
+            tentative_hits: 3,
         }
     }
 }
@@ -132,7 +136,11 @@ impl Tracker {
     ) -> Vec<&TrackedObject> {
         let cfg = self.config;
         let live: Vec<usize> = (0..self.tracks.len())
-            .filter(|&i| self.tracks[i].misses <= cfg.max_misses)
+            .filter(|&i| {
+                let t = &self.tracks[i];
+                t.misses == 0
+                    || (t.misses <= cfg.max_misses && t.history.len() >= cfg.tentative_hits)
+            })
             .collect();
         let mut track_used = vec![false; self.tracks.len()];
         let mut det_used = vec![false; detections.len()];
@@ -331,6 +339,17 @@ mod tests {
         assert!(a.velocity.0 > 0.0 && b.velocity.0 < 0.0);
         assert_eq!(a.history.len(), 10);
         assert_eq!(b.history.len(), 10);
+    }
+
+    #[test]
+    fn tentative_track_does_not_take_a_ball_after_a_miss() {
+        let mut tr = Tracker::new(config());
+        tr.update(0, 0, &[det(140.0, 190.0, 0)]);
+        tr.update(1, DT, &[det(160.0, 192.0, 0)]);
+        tr.update(2, 2 * DT, &[]);
+        tr.update(3, 3 * DT, &[det(230.0, 196.0, 0)]);
+        assert_eq!(tr.tracks().len(), 2);
+        assert_eq!(tr.tracks()[0].history.len(), 2);
     }
 
     #[test]

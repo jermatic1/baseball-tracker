@@ -240,7 +240,14 @@ impl Watcher {
                 }
                 self.episode = None;
                 let frames: Vec<DetFrame> = self.frames.iter().cloned().collect();
-                self.trim(t_ns.saturating_sub(preroll));
+                // A window cut while the ball still moves leaves its tail as
+                // the next one's pre-roll; one that settled leaves nothing, or
+                // its motion would be measured twice.
+                if settled {
+                    self.frames.clear();
+                } else {
+                    self.trim(t_ns.saturating_sub(preroll));
+                }
                 for r in &mut self.runs {
                     r.first_ns = None;
                 }
@@ -462,14 +469,32 @@ mod tests {
     }
 
     #[test]
+    fn a_window_soon_after_another_does_not_reuse_its_frames() {
+        let mut w = Watcher::new(WatchConfig::default());
+        let run = |from: u64| {
+            move |i: u64| {
+                if (from..from + 10).contains(&i) {
+                    vec![ball(100.0 + 30.0 * (i - from) as f64, 200.0)]
+                } else {
+                    vec![]
+                }
+            }
+        };
+        let (a, b) = (run(20), run(70));
+        let eps = feed(&mut w, (0..140).map(|i| (i, [a(i), b(i)].concat())));
+        assert_eq!(eps.len(), 2, "{eps:?}");
+        assert!(eps[1].first() > eps[0].last());
+    }
+
+    #[test]
     fn a_flickering_spot_stops_opening_windows() {
         let mut w = Watcher::new(WatchConfig::default());
-        // Three frames in every 25, creeping the same way each time, so each
+        // Three frames in every 40, creeping the same way each time, so each
         // burst looks like a short run until the spot is known.
         let eps = feed(
             &mut w,
-            (0..600).map(|i| {
-                let k = i % 25;
+            (0..960).map(|i| {
+                let k = i % 40;
                 let seen = k < 3;
                 (
                     i,
@@ -483,7 +508,7 @@ mod tests {
         );
         assert!(!eps.is_empty(), "the first bursts open windows");
         assert!(
-            eps.iter().all(|e| e.first() < 300),
+            eps.iter().all(|e| e.first() < 480),
             "{:?}",
             eps.iter().map(Episode::first).collect::<Vec<_>>()
         );

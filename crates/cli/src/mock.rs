@@ -161,8 +161,9 @@ pub fn mock_pitch(rng: &mut Rng, cfg: &Config, clip: &str) -> HitRecord {
     }
 }
 
-/// A hit with the same predicted flight a real one gets.
+/// A hit of a pitch, with the same predicted flight a real one gets.
 pub fn mock_hit(rng: &mut Rng, cfg: &Config, clip: &str) -> HitRecord {
+    let pitched = mock_pitch(rng, cfg, clip);
     let exit_velocity = rng.between(40.0, 80.0);
     let launch_angle = rng.between(-5.0, 35.0);
     let spray_angle = rng.between(-30.0, 30.0);
@@ -172,9 +173,10 @@ pub fn mock_hit(rng: &mut Rng, cfg: &Config, clip: &str) -> HitRecord {
         exit_velocity,
         launch_angle,
         spray_angle,
-        pitch_velocity: Some(rng.between(35.0, 50.0)),
+        pitch_velocity: Some(pitched.exit_velocity),
         hit_type: Some(HitType::from_launch_deg(launch_angle)),
         hit: Some(flight::predict([0.0, 0.9, 0.0], v, air)),
+        pitch: pitched.pitch,
         ..base(EventKind::Hit, clip, 9)
     }
 }

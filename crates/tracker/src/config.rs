@@ -66,7 +66,7 @@ impl Default for WatchConfig {
         Self {
             motion: 4.0,
             preroll: 0.5,
-            settle: 0.15,
+            settle: 0.3,
             max_episode: 6.0,
             keep_clips: true,
         }
